@@ -21,7 +21,6 @@ public class Signup extends JFrame {
     private JTextField cityField;
     private JTextField pincodeField;
     private JTextField stateField;
-    private JTextField dobChooser;
 
     private JRadioButton maleRadio;
     private JRadioButton femaleRadio;
@@ -191,11 +190,11 @@ public class Signup extends JFrame {
         // -- next button --
         nextButton = new JButton();
         nextButton.setText("Next");
-        nextButton.setFont(CommonConstants.radioButtonFont);
+        nextButton.setFont(CommonConstants.ButtonFont);
         nextButton.setForeground(Color.DARK_GRAY);
         nextButton.setOpaque(true);
         nextButton.setFocusPainted(false);
-        nextButton.setBounds(600,540,110,50);
+        nextButton.setBounds(CommonConstants.r);
         add(nextButton);
         nextButton.addActionListener(new ActionListener() {
             @Override
@@ -220,7 +219,7 @@ public class Signup extends JFrame {
 
                 // validating pincode
                 if(!pincode.matches("\\d{6}")) {
-                    JOptionPane.showMessageDialog(Signup.this,"Pincode must be exactly 6 digits","Validatio Error",JOptionPane.WARNING_MESSAGE);
+                    JOptionPane.showMessageDialog(Signup.this,"Pincode must be of exactly 6 digits","Validation Error",JOptionPane.WARNING_MESSAGE);
                     return;
                 }
 
@@ -245,9 +244,10 @@ public class Signup extends JFrame {
 
                     int rows = ps.executeUpdate();
                     if(rows == 1) {
-                        JOptionPane.showMessageDialog(Signup.this,"hello");
+                        new Signup2(formno);
+                        Signup.this.dispose();
                     } else {
-                        JOptionPane.showMessageDialog(Signup.this,"vapas karo");
+                        JOptionPane.showMessageDialog(Signup.this,"Insertion failed! please try again");
                     }
                 } catch (SQLException e) {
                     JOptionPane.showMessageDialog(Signup.this,"Database error : "+ e.getMessage(),"DB error",JOptionPane.ERROR_MESSAGE);
@@ -262,6 +262,8 @@ public class Signup extends JFrame {
                         e.printStackTrace();
                     }
                 }
+                new Signup2(formno).setVisible(true);
+              Signup.this.dispose();
             }
         });
     }
