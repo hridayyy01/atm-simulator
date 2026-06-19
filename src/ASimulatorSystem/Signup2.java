@@ -172,6 +172,10 @@ public class Signup2 extends JFrame {
                     ps.setString(8,aadhar);
                     ps.setString(9,senior);
                     ps.executeUpdate();
+
+                    JOptionPane.showMessageDialog(Signup2.this, "Details saved.");
+                    new Signup3(formno).setVisible(true);
+                    Signup2.this.dispose();
                 } catch (SQLException e) {
                     JOptionPane.showMessageDialog(Signup2.this,"Database error : "+ e.getMessage(),"DB error",JOptionPane.ERROR_MESSAGE);
                     e.printStackTrace();
