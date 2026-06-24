@@ -41,4 +41,10 @@ public class CommonConstants {
     public static final int labelW3 = 100;
     public static final int fieldW3 = 200;
     public static final Rectangle r3 = new Rectangle(50,120,300,60);
+
+    // login
+    public static final int labelX4 = 40;
+    public static final int labelW4 = 100;
+    public static final int fieldX4 = 150;
+    public static final int fieldW4 = 150;
 }

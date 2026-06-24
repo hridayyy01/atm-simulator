@@ -107,7 +107,7 @@ public class Signup3 extends JFrame {
                     if(rows > 0) {
                         JOptionPane.showMessageDialog(Signup3.this,"Account created!\nCard no : " + cardno + "\nPIN : " + pin +"\n please note this down it will not be shown again!");
                         Signup3.this.dispose();
-//                        new Login();
+                        new Login().setVisible(true);
                     }
                 } catch(SQLException se) {
                     se.printStackTrace();
