@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS signuptwo (
     occupation VARCHAR(20),
     pan VARCHAR(20),
     aadhar VARCHAR(20),
+    isSenior VARCHAR(3) NULL DEFAULT NULL,
     FOREIGN KEY (formno) REFERENCES signup(formno)
 );
 

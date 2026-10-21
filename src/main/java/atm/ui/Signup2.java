@@ -1,16 +1,18 @@
 package atm.ui;
 
-import atm.db.Conn;
+import atm.dao.AuthenticationDao;
+import atm.dao.RegistrationDao;
+import atm.model.AdditionalDetails;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 
 public class Signup2 extends JFrame {
+    private final RegistrationDao registrationDao;
+    private final AuthenticationDao authenticationDao;
 
     String formno;
 
@@ -30,8 +32,10 @@ public class Signup2 extends JFrame {
     private JButton nextButton;
 
 
-    Signup2(String formno) {
+    Signup2(String formno, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
         this.formno = formno;
+        this.registrationDao = registrationDao;
+        this.authenticationDao = authenticationDao;
         setTitle("Bank ATM - registration page 2");
         setSize(850,780);
         setLocationRelativeTo(null);
@@ -140,7 +144,7 @@ public class Signup2 extends JFrame {
             }
 
             private void executeInsert() {
-                try (Connection con = Conn.getConnection()) {
+                try {
                     String religion = (String) creligion.getSelectedItem();
                     String category = (String) ccategory.getSelectedItem();
                     String income = (String) cincome.getSelectedItem();
@@ -156,22 +160,12 @@ public class Signup2 extends JFrame {
                     }
 
                     String senior = ryes.isSelected() ? "Yes" : "No";
-                    String sql = "INSERT INTO signuptwo(formno,religion,category,income,education,occupation,pan,aadhar,isSenior)" + "VALUES( ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-                    try (PreparedStatement ps = con.prepareStatement(sql)) {
-                        ps.setString(1,formno);
-                        ps.setString(2,religion);
-                        ps.setString(3,category);
-                        ps.setString(4,income);
-                        ps.setString(5,education);
-                        ps.setString(6,occupation);
-                        ps.setString(7,pan);
-                        ps.setString(8,aadhar);
-                        ps.setString(9,senior);
-                        ps.executeUpdate();
-                    }
+                    AdditionalDetails details = new AdditionalDetails(formno, religion, category,
+                            income, education, occupation, pan, aadhar, senior);
+                    registrationDao.saveAdditionalDetails(details);
 
                     JOptionPane.showMessageDialog(Signup2.this, "Details saved.");
-                    new Signup3(formno).setVisible(true);
+                    new Signup3(formno, registrationDao, authenticationDao).setVisible(true);
                     Signup2.this.dispose();
                 } catch (SQLException e) {
                     JOptionPane.showMessageDialog(Signup2.this,"Database error : "+ e.getMessage(),"DB error",JOptionPane.ERROR_MESSAGE);

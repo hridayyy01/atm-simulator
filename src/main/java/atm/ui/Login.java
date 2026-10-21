@@ -1,20 +1,20 @@
 package atm.ui;
 
-import atm.db.Conn;
+import atm.dao.AuthenticationDao;
+import atm.model.AuthenticatedUser;
 
 import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 
 public class Login extends JFrame {
+    private final AuthenticationDao authenticationDao;
     JTextField cardnoField;
     JTextField pinField;
     JButton loginBtn;
 
-    Login() {
+    Login(AuthenticationDao authenticationDao) {
+        this.authenticationDao = authenticationDao;
         setTitle("ATM Login");
         setSize(400,250);
         setLayout(null);
@@ -63,26 +63,13 @@ public class Login extends JFrame {
                     return;
                 }
 
-                String sql = "SELECT l.formno, s.name FROM login l "+
-                        "JOIN signup s ON l.formno = s.formno "+
-                        "WHERE l.cardno = ? AND l.pin = ?";
-
-                try (Connection conn = Conn.getConnection();
-                     PreparedStatement ps = conn.prepareStatement(sql)) {
-                    ps.setString(1,cardno);
-                    ps.setString(2,pin);
-
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if(rs.next()) {
-                            String formno = rs.getString("formno");
-                            String holderName = rs.getString("name");
-
-                            JOptionPane.showMessageDialog(Login.this,"Welcome : " + holderName);
-                            Login.this.dispose();
-//                        new Transaction(cardno ,pin , formno);
-                        } else {
-                            JOptionPane.showMessageDialog(Login.this,"Invalid Card Number or pin");
-                        }
+                try {
+                    AuthenticatedUser user = authenticationDao.authenticate(cardno, pin);
+                    if(user != null) {
+                        JOptionPane.showMessageDialog(Login.this,"Welcome : " + user.name());
+                        Login.this.dispose();
+                    } else {
+                        JOptionPane.showMessageDialog(Login.this,"Invalid Card Number or pin");
                     }
 
                 } catch (Exception e) {

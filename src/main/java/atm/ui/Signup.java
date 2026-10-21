@@ -1,17 +1,19 @@
 package atm.ui;
 
-import atm.db.Conn;
+import atm.dao.AuthenticationDao;
+import atm.dao.RegistrationDao;
+import atm.model.PersonalDetails;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Random;
 
 public class Signup extends JFrame {
+    private final RegistrationDao registrationDao;
+    private final AuthenticationDao authenticationDao;
     private String formno;
 
     private JTextField nameField;
@@ -31,7 +33,9 @@ public class Signup extends JFrame {
 
     private JButton nextButton;
 
-    public Signup() {
+    public Signup(RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+        this.registrationDao = registrationDao;
+        this.authenticationDao = authenticationDao;
         formno = String.valueOf(1000 + new Random().nextInt(9000));
         setTitle("New Account - Application form");
         setSize(850, 780);
@@ -223,23 +227,12 @@ public class Signup extends JFrame {
                     return;
                 }
 
-                String sql = "INSERT INTO signup (formno, name, fname, gender, email, marital, address, city, pincode, state)" + "VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-                try (Connection con = Conn.getConnection();
-                     PreparedStatement ps = con.prepareStatement(sql)) {
-                    ps.setString(1,formno);
-                    ps.setString(2,name);
-                    ps.setString(3,fname);
-                    ps.setString(4,gender);
-                    ps.setString(5,email);
-                    ps.setString(6,Marital);
-                    ps.setString(7,address);
-                    ps.setString(8,city);
-                    ps.setString(9,pincode);
-                    ps.setString(10,state);
-
-                    int rows = ps.executeUpdate();
+                PersonalDetails details = new PersonalDetails(formno, name, fname, gender,
+                        email, Marital, address, city, pincode, state);
+                try {
+                    int rows = registrationDao.savePersonalDetails(details);
                     if(rows == 1) {
-                        new Signup2(formno);
+                        new Signup2(formno, registrationDao, authenticationDao).setVisible(true);
                         Signup.this.dispose();
                     } else {
                         JOptionPane.showMessageDialog(Signup.this,"Insertion failed! please try again");
@@ -250,8 +243,6 @@ public class Signup extends JFrame {
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
-                new Signup2(formno).setVisible(true);
-              Signup.this.dispose();
             }
         });
     }

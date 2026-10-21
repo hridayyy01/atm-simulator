@@ -1,5 +1,7 @@
 package atm;
 
+import atm.dao.AuthenticationDao;
+import atm.dao.RegistrationDao;
 import atm.ui.Signup;
 
 import javax.swing.*;
@@ -9,7 +11,9 @@ public class App {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-                new Signup().setVisible(true);
+                RegistrationDao registrationDao = new RegistrationDao();
+                AuthenticationDao authenticationDao = new AuthenticationDao();
+                new Signup(registrationDao, authenticationDao).setVisible(true);
             }
         });
     }
