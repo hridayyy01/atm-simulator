@@ -1,12 +1,14 @@
-package ASimulatorSystem;
+package atm.ui;
 
-import constants.CommonConstants;
+import atm.db.Conn;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 
 public class Signup2 extends JFrame {
 
@@ -138,13 +140,7 @@ public class Signup2 extends JFrame {
             }
 
             private void executeInsert() {
-                PreparedStatement ps = null;
-                Connection con = null;
-
-                try {
-                    Conn c1 = new Conn();
-                    con = c1.c;
-
+                try (Connection con = Conn.getConnection()) {
                     String religion = (String) creligion.getSelectedItem();
                     String category = (String) ccategory.getSelectedItem();
                     String income = (String) cincome.getSelectedItem();
@@ -161,17 +157,18 @@ public class Signup2 extends JFrame {
 
                     String senior = ryes.isSelected() ? "Yes" : "No";
                     String sql = "INSERT INTO signuptwo(formno,religion,category,income,education,occupation,pan,aadhar,isSenior)" + "VALUES( ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-                    ps = con.prepareStatement(sql);
-                    ps.setString(1,formno);
-                    ps.setString(2,religion);
-                    ps.setString(3,category);
-                    ps.setString(4,income);
-                    ps.setString(5,education);
-                    ps.setString(6,occupation);
-                    ps.setString(7,pan);
-                    ps.setString(8,aadhar);
-                    ps.setString(9,senior);
-                    ps.executeUpdate();
+                    try (PreparedStatement ps = con.prepareStatement(sql)) {
+                        ps.setString(1,formno);
+                        ps.setString(2,religion);
+                        ps.setString(3,category);
+                        ps.setString(4,income);
+                        ps.setString(5,education);
+                        ps.setString(6,occupation);
+                        ps.setString(7,pan);
+                        ps.setString(8,aadhar);
+                        ps.setString(9,senior);
+                        ps.executeUpdate();
+                    }
 
                     JOptionPane.showMessageDialog(Signup2.this, "Details saved.");
                     new Signup3(formno).setVisible(true);
@@ -181,13 +178,6 @@ public class Signup2 extends JFrame {
                     e.printStackTrace();
                 } catch (Exception e) {
                     JOptionPane.showMessageDialog(Signup2.this,"Error : " + e.getMessage());
-                } finally {
-                  try {
-                      if(ps != null) ps.close();
-                      if(con != null) con.close();
-                  } catch (SQLException e) {
-                      e.printStackTrace();
-                  }
                 }
             }
 

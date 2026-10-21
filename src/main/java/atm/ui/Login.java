@@ -1,6 +1,6 @@
-package ASimulatorSystem;
+package atm.ui;
 
-import constants.CommonConstants;
+import atm.db.Conn;
 
 import javax.swing.*;
 import java.awt.event.ActionEvent;
@@ -8,7 +8,6 @@ import java.awt.event.ActionListener;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 
 public class Login extends JFrame {
     JTextField cardnoField;
@@ -64,45 +63,30 @@ public class Login extends JFrame {
                     return;
                 }
 
-                Connection conn = null;
-                PreparedStatement ps = null;
-                ResultSet rs = null;
+                String sql = "SELECT l.formno, s.name FROM login l "+
+                        "JOIN signup s ON l.formno = s.formno "+
+                        "WHERE l.cardno = ? AND l.pin = ?";
 
-                try {
-                    Conn c1 = new Conn();
-                    conn = c1.c;
-
-                    String sql = "SELECT l.formno, s.name FROM login l "+
-                            "JOIN signup s ON l.formno = s.formno "+
-                            "WHERE l.cardno = ? AND l.pin = ?";
-
-                    ps = conn.prepareStatement(sql);
+                try (Connection conn = Conn.getConnection();
+                     PreparedStatement ps = conn.prepareStatement(sql)) {
                     ps.setString(1,cardno);
                     ps.setString(2,pin);
 
-                    rs = ps.executeQuery();
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if(rs.next()) {
+                            String formno = rs.getString("formno");
+                            String holderName = rs.getString("name");
 
-                    if(rs.next()) {
-                        String formno = rs.getString("formno");
-                        String holderName = rs.getString("name");
-
-                        JOptionPane.showMessageDialog(Login.this,"Welcome : " + holderName);
-                        Login.this.dispose();
+                            JOptionPane.showMessageDialog(Login.this,"Welcome : " + holderName);
+                            Login.this.dispose();
 //                        new Transaction(cardno ,pin , formno);
-                    } else {
-                        JOptionPane.showMessageDialog(Login.this,"Invalid Card Number or pin");
+                        } else {
+                            JOptionPane.showMessageDialog(Login.this,"Invalid Card Number or pin");
+                        }
                     }
 
                 } catch (Exception e) {
                     e.printStackTrace();
-                } finally {
-                    try {
-                        if(rs != null) rs.close();
-                        if(ps != null) rs.close();
-                        if(conn != null) rs.close();
-                    } catch(SQLException se2) {
-                        se2.printStackTrace();
-                    }
                 }
             }
         });

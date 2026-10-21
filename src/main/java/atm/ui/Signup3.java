@@ -1,13 +1,14 @@
-package ASimulatorSystem;
+package atm.ui;
 
-import com.mysql.cj.protocol.Resultset;
-import com.mysql.cj.util.StringInspector;
-import constants.CommonConstants;
+import atm.db.Conn;
 
 import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Random;
 
 public class Signup3 extends JFrame {
@@ -71,60 +72,45 @@ public class Signup3 extends JFrame {
 
             @Override
             public void actionPerformed(ActionEvent ae) {
-                Connection con = null;
-                PreparedStatement checkStmt = null, insertStmt = null;
-                ResultSet rs = null;
+                String checkSql = "SELECT s.formno FROM signup s " +
+                        "JOIN signuptwo st " +
+                        "ON s.formno = st.formno " +
+                        "WHERE s.formno = ?" +
+                        "AND NOT EXISTS (SELECT 1 FROM login l WHERE l.formno = s.formno)";
 
-                try {
-                    Conn c1 = new Conn();
-                    con = c1.c;
-
-                    String checkSql = "SELECT s.formno FROM signup s " +
-                            "JOIN signuptwo st " +
-                            "ON s.formno = st.formno " +
-                            "WHERE s.formno = ?" +
-                            "AND NOT EXISTS (SELECT 1 FROM login l WHERE l.formno = s.formno)";
-
-                    checkStmt = con.prepareStatement(checkSql);
+                try (Connection con = Conn.getConnection();
+                     PreparedStatement checkStmt = con.prepareStatement(checkSql)) {
                     checkStmt.setString(1,formno);
-                    rs = checkStmt.executeQuery();
-
-                    if(!rs.next()) {
-                        JOptionPane.showMessageDialog(Signup3.this,"Signup incomplete or card already issued for this form");
-                        return;
+                    try (ResultSet rs = checkStmt.executeQuery()) {
+                        if(!rs.next()) {
+                            JOptionPane.showMessageDialog(Signup3.this,"Signup incomplete or card already issued for this form");
+                            return;
+                        }
                     }
 
                     String cardno = generateUniqueCardNo(con);
                     String pin = generatePin();
 
                     String insertSql = "INSERT INTO LOGIN (cardno, pin, formno) VALUES (?, ?, ?)";
-                    insertStmt = con.prepareStatement(insertSql);
-                    insertStmt.setString(1, cardno);
-                    insertStmt.setString(2,pin);
-                    insertStmt.setString(3,formno);
+                    try (PreparedStatement insertStmt = con.prepareStatement(insertSql)) {
+                        insertStmt.setString(1, cardno);
+                        insertStmt.setString(2,pin);
+                        insertStmt.setString(3,formno);
 
-                    int rows = insertStmt.executeUpdate();
-                    if(rows > 0) {
-                        JOptionPane.showMessageDialog(Signup3.this,"Account created!\nCard no : " + cardno + "\nPIN : " + pin +"\n please note this down it will not be shown again!");
-                        Signup3.this.dispose();
-                        new Login().setVisible(true);
+                        int rows = insertStmt.executeUpdate();
+                        if(rows > 0) {
+                            JOptionPane.showMessageDialog(Signup3.this,"Account created!\nCard no : " + cardno + "\nPIN : " + pin +"\n please note this down it will not be shown again!");
+                            Signup3.this.dispose();
+                            new Login().setVisible(true);
+                        }
                     }
                 } catch(SQLException se) {
                     se.printStackTrace();
                     JOptionPane.showMessageDialog(Signup3.this,"Database Error : " + se.getMessage());
                 } catch (Exception e) {
                     e.printStackTrace();
-                } finally {
-                    try {
-                        if (rs != null) rs.close();
-                        if (checkStmt != null) checkStmt.close();
-                        if (insertStmt != null) insertStmt.close();
-                    } catch (SQLException sx) {
-                        sx.printStackTrace();
-                    }
                 }
             }
         });
-
     }
 }

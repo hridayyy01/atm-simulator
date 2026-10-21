@@ -1,6 +1,6 @@
-package ASimulatorSystem;
+package atm.ui;
 
-import constants.CommonConstants;
+import atm.db.Conn;
 
 import javax.swing.*;
 import java.awt.*;
@@ -45,7 +45,7 @@ public class Signup extends JFrame {
     private void addGUIComponents() {
         // -- logo --
         ImageIcon rawLogo = new ImageIcon(
-                ClassLoader.getSystemResource("ASimulatorSystem/icons/logo.jpg")
+                ClassLoader.getSystemResource("icons/logo.jpg")
         );
         Image scaledLogo = rawLogo.getImage().getScaledInstance(100, 100, Image.SCALE_SMOOTH);
         JLabel logoLabel = new JLabel(new ImageIcon(scaledLogo));
@@ -223,14 +223,9 @@ public class Signup extends JFrame {
                     return;
                 }
 
-                Connection con = null;
-                PreparedStatement ps = null;
-                try {
-                    Conn c1 = new Conn();
-                    con = c1.c;
-
-                    String sql = "INSERT INTO signup (formno, name, fname, gender, email, marital, address, city, pincode, state)" + "VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-                    ps = con.prepareStatement(sql);
+                String sql = "INSERT INTO signup (formno, name, fname, gender, email, marital, address, city, pincode, state)" + "VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                try (Connection con = Conn.getConnection();
+                     PreparedStatement ps = con.prepareStatement(sql)) {
                     ps.setString(1,formno);
                     ps.setString(2,name);
                     ps.setString(3,fname);
@@ -254,13 +249,6 @@ public class Signup extends JFrame {
                     e.printStackTrace();
                 } catch (Exception e) {
                     e.printStackTrace();
-                } finally {
-                    try {
-                        if(ps != null) ps.close();
-                        if(con != null) con.close();
-                    } catch (SQLException e) {
-                        e.printStackTrace();
-                    }
                 }
                 new Signup2(formno).setVisible(true);
               Signup.this.dispose();

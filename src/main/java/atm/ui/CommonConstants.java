@@ -1,4 +1,4 @@
-package constants;
+package atm.ui;
 
 import java.awt.*;
 
