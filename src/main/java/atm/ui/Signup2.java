@@ -3,18 +3,18 @@ package atm.ui;
 import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
 import atm.model.AdditionalDetails;
+import atm.model.Registration;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.SQLException;
 
 public class Signup2 extends JFrame {
     private final RegistrationDao registrationDao;
     private final AuthenticationDao authenticationDao;
 
-    String formno;
+    private final Registration registration;
 
     private JComboBox<String> creligion;
     private JComboBox<String> ccategory;
@@ -32,8 +32,8 @@ public class Signup2 extends JFrame {
     private JButton nextButton;
 
 
-    Signup2(String formno, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
-        this.formno = formno;
+    Signup2(Registration registration, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+        this.registration = registration;
         this.registrationDao = registrationDao;
         this.authenticationDao = authenticationDao;
         setTitle("Bank ATM - registration page 2");
@@ -135,15 +135,15 @@ public class Signup2 extends JFrame {
         nextButton.setFocusPainted(false);
         add(nextButton);
         nextButton.addActionListener(new ActionListener() {
-            private boolean isFormnoValid() {
-                if(formno == null || formno.trim().isEmpty()) {
+            private boolean hasPersonalDetails() {
+                if(registration.getPersonalDetails() == null) {
                     JOptionPane.showMessageDialog(Signup2.this,"Invalid form no please restart registration");
                     return false;
                 }
                 return true;
             }
 
-            private void executeInsert() {
+            private void saveDetailsAndContinue() {
                 try {
                     String religion = (String) creligion.getSelectedItem();
                     String category = (String) ccategory.getSelectedItem();
@@ -160,25 +160,25 @@ public class Signup2 extends JFrame {
                     }
 
                     String senior = ryes.isSelected() ? "Yes" : "No";
-                    AdditionalDetails details = new AdditionalDetails(formno, religion, category,
+                    AdditionalDetails details = new AdditionalDetails(religion, category,
                             income, education, occupation, pan, aadhar, senior);
-                    registrationDao.saveAdditionalDetails(details);
+                    nextButton.setEnabled(false);
+                    registration.setAdditionalDetails(details);
 
-                    JOptionPane.showMessageDialog(Signup2.this, "Details saved.");
-                    new Signup3(formno, registrationDao, authenticationDao).setVisible(true);
+                    JOptionPane.showMessageDialog(Signup2.this, "Details captured. Submit on the next screen to save your application.");
+                    new Signup3(registration, registrationDao, authenticationDao).setVisible(true);
                     Signup2.this.dispose();
-                } catch (SQLException e) {
-                    JOptionPane.showMessageDialog(Signup2.this,"Database error : "+ e.getMessage(),"DB error",JOptionPane.ERROR_MESSAGE);
-                    e.printStackTrace();
                 } catch (Exception e) {
+                    nextButton.setEnabled(true);
                     JOptionPane.showMessageDialog(Signup2.this,"Error : " + e.getMessage());
                 }
             }
 
             @Override
             public void actionPerformed(ActionEvent e) {
-                if(!isFormnoValid()) return;
-                executeInsert();
+                if (!nextButton.isEnabled()) return;
+                if(!hasPersonalDetails()) return;
+                saveDetailsAndContinue();
             }
         });
     }

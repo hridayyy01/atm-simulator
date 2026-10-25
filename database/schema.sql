@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS signup (
     city VARCHAR(20),
     pincode VARCHAR(10),
     state VARCHAR(30)
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS signuptwo (
     formno VARCHAR(20) PRIMARY KEY,
@@ -26,14 +26,15 @@ CREATE TABLE IF NOT EXISTS signuptwo (
     aadhar VARCHAR(20),
     isSenior VARCHAR(3) NULL DEFAULT NULL,
     FOREIGN KEY (formno) REFERENCES signup(formno)
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS login (
     formno  VARCHAR(20),
     cardno VARCHAR(20)  PRIMARY KEY,
     pin  VARCHAR(10)  NOT NULL,
+    CONSTRAINT uq_login_formno UNIQUE (formno),
     FOREIGN KEY (formno) REFERENCES signup(formno)
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS bank (
     id INT AUTO_INCREMENT PRIMARY KEY,

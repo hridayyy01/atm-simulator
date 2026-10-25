@@ -1,7 +1,6 @@
 package atm.model;
 
 public record PersonalDetails(
-        String formno,
         String name,
         String fatherName,
         String gender,

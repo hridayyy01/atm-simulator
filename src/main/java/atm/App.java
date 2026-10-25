@@ -2,6 +2,7 @@ package atm;
 
 import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
+import atm.model.Registration;
 import atm.ui.Signup;
 
 import javax.swing.*;
@@ -13,7 +14,7 @@ public class App {
             public void run() {
                 RegistrationDao registrationDao = new RegistrationDao();
                 AuthenticationDao authenticationDao = new AuthenticationDao();
-                new Signup(registrationDao, authenticationDao).setVisible(true);
+                new Signup(new Registration(), registrationDao, authenticationDao).setVisible(true);
             }
         });
     }

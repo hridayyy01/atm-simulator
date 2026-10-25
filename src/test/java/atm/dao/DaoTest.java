@@ -3,14 +3,14 @@ package atm.dao;
 import atm.model.AdditionalDetails;
 import atm.model.AuthenticatedUser;
 import atm.model.CardCredentials;
-import atm.model.CardIssueResult;
+import atm.model.Registration;
 import atm.model.PersonalDetails;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.sql.*;
 import java.util.*;
-import java.util.concurrent.Callable;
+import java.util.concurrent.*;
 import java.util.logging.Logger;
 
 /** Headless tests using a scripted JDBC driver, without a database or Swing. */
@@ -18,7 +18,7 @@ public final class DaoTest {
     private static final String TEST_URL = "jdbc:atm-dao-test";
     private static final RegistrationDao REGISTRATION = new RegistrationDao();
     private static final AuthenticationDao AUTHENTICATION = new AuthenticationDao();
-    private static final PersonalDetails PERSONAL = new PersonalDetails("1234", "Test Name",
+    private static final PersonalDetails PERSONAL = new PersonalDetails("Test Name",
             "Test Parent", "Female", "test@example.invalid", "Married", "Test Address",
             "Test City", "123456", "Test State");
     private static Script script;
@@ -28,40 +28,74 @@ public final class DaoTest {
         Driver driver = new TestDriver();
         DriverManager.registerDriver(driver);
         try {
-            registrationWrites();
+            draftAndCompleteness();
+            successfulSubmission();
             authentication();
-            cardIssuance();
-            failures();
-            System.out.println("PASS: DAO data mapping, outcomes, duplicate-card retries, SQL errors and cleanup.");
+            rollbackFailures();
+            retryAfterRollback();
+            collisionRetries();
+            concurrentSubmission();
+            uncertainOutcomes();
+            System.out.println("PASS: atomic registration, rollback, bounded collision retries, duplicate submissions, authentication and cleanup.");
         } finally {
             DriverManager.deregisterDriver(driver);
         }
     }
 
-    private static void registrationWrites() throws Exception {
-        for (int count : new int[]{1, 0}) {
-            Step insert = new Step("INSERT INTO signup ", count, false);
-            script = new Script(insert);
-            check(REGISTRATION.savePersonalDetails(PERSONAL) == count, "Preserve the personal insert count");
-            check(insert.parameters.equals(List.of("1234", "Test Name", "Test Parent", "Female",
-                    "test@example.invalid", "Married", "Test Address", "Test City", "123456", "Test State")),
-                    "Personal details must map to the matching columns");
-            script.verifyClosed();
-        }
-        for (String senior : new String[]{"Yes", "No"}) {
-            Step insert = new Step("INSERT INTO signuptwo(", 1, false);
-            script = new Script(insert);
-            REGISTRATION.saveAdditionalDetails(additional(senior));
-            check(insert.parameters.equals(List.of("1234", "Hindu", "General", "1-5 lakhs",
-                    "Graduate", "Service", "TESTPAN", "000000000000", senior)),
-                    "Additional details must map to the matching columns, including senior status");
-            script.verifyClosed();
+    private static Registration draft(String senior) {
+        Registration registration = new Registration();
+        registration.setPersonalDetails(PERSONAL);
+        registration.setAdditionalDetails(new AdditionalDetails("Hindu", "General", "1-5 lakhs",
+                "Graduate", "Service", "TESTPAN", "000000000000", senior));
+        return registration;
+    }
+
+    private static void draftAndCompleteness() throws Exception {
+        script = new Script();
+        Registration registration = draft("No");
+        check(registration.getApplicationId().matches("[0-9A-HJKMNP-TV-Z]{20}"), "Use a schema-compatible random application ID");
+        check(registration.getPersonalDetails() == PERSONAL, "Keep the details in the shared draft");
+        check(script.connections == 0, "Collecting signup details must not open a database connection");
+        Registration incomplete = new Registration();
+        for (int page = 0; page < 2; page++) {
+            try {
+                REGISTRATION.submit(incomplete);
+                throw new AssertionError("Reject incomplete submissions");
+            } catch (IllegalStateException expected) {
+                check(script.connections == 0, "Reject incomplete applications before opening JDBC");
+            }
+            incomplete.setPersonalDetails(PERSONAL);
         }
     }
 
-    private static AdditionalDetails additional(String senior) {
-        return new AdditionalDetails("1234", "Hindu", "General", "1-5 lakhs", "Graduate",
-                "Service", "TESTPAN", "000000000000", senior);
+    private static Step personal() { return new Step("INSERT INTO signup ", 1, false); }
+    private static Step additional() { return new Step("INSERT INTO signuptwo(", 1, false); }
+    private static Step credentials() { return new Step("INSERT INTO login ", 1, false); }
+
+    private static void successfulSubmission() throws Exception {
+        for (String senior : new String[]{"Yes", "No"}) {
+            Registration registration = draft(senior);
+            Step personal = personal(), additional = additional(), credentials = credentials();
+            script = new Script(personal, additional, credentials);
+            CardCredentials result = REGISTRATION.submit(registration);
+            String id = registration.getApplicationId();
+            check(personal.parameters.equals(List.of(id, "Test Name", "Test Parent", "Female",
+                    "test@example.invalid", "Married", "Test Address", "Test City", "123456", "Test State")),
+                    "Preserve personal field mapping");
+            check(additional.parameters.equals(List.of(id, "Hindu", "General", "1-5 lakhs", "Graduate",
+                    "Service", "TESTPAN", "000000000000", senior)), "Preserve additional field mapping");
+            check(result.getCardno().matches("\\d{16}") && result.getPin().matches("[1-9]\\d{3}"), "Preserve card and PIN formats");
+            check(credentials.parameters.equals(List.of(result.getCardno(), result.getPin(), id)), "Persist the returned credentials");
+            check(script.commits == 1 && script.rollbacks == 0 && script.persisted.size() == 3,
+                    "Commit all three registration records together");
+            check(registration.isSubmitted() && REGISTRATION.submit(registration) == result,
+                    "Repeated submission must return the committed credentials without another write");
+            try {
+                registration.setPersonalDetails(PERSONAL);
+                throw new AssertionError("A submitted application must be immutable");
+            } catch (IllegalStateException expected) { }
+            script.verifyClosed();
+        }
     }
 
     private static void authentication() throws Exception {
@@ -76,79 +110,136 @@ public final class DaoTest {
                     "Only return a user when credentials match");
             script.verifyClosed();
         }
+        Step lookup = new Step("SELECT l.formno, s.name FROM login l ", 0, false);
+        lookup.failure = new SQLException("Authentication failed");
+        script = new Script(lookup);
+        check(expectSqlFailure(() -> AUTHENTICATION.authenticate("0000000000000001", "0000")) == lookup.failure,
+                "Propagate authentication errors");
     }
 
-    private static void cardIssuance() throws Exception {
-        Step ineligible = eligibility(false);
-        script = new Script(ineligible);
-        CardIssueResult result = REGISTRATION.issueCard("1234");
-        check(result.status() == CardIssueResult.Status.INCOMPLETE_OR_ALREADY_ISSUED && result.credentials() == null,
-                "Do not issue cards for incomplete registrations or already-issued forms");
-        check(ineligible.parameters.equals(List.of("1234")), "Check the requested form");
-        script.verifyClosed();
-
-        for (int count : new int[]{1, 0}) {
-            Step available = duplicate(false);
-            Step insert = new Step("INSERT INTO login ", count, false);
-            script = new Script(eligibility(true), duplicate(true), available, insert);
-            result = REGISTRATION.issueCard("1234");
-            String cardno = insert.parameters.get(0);
-            String pin = insert.parameters.get(1);
-            check(cardno.matches("\\d{16}"), "Generate a 16-digit card number");
-            check(pin.matches("[1-9]\\d{3}"), "Preserve the existing PIN range");
-            check(insert.parameters.get(2).equals("1234"), "Issue credentials for the requested form");
-            check(available.parameters.equals(List.of(cardno)), "Insert the card that passed the uniqueness check");
-            if (count == 1) {
-                check(result.status() == CardIssueResult.Status.ISSUED, "Report successful issuance");
-                CardCredentials credentials = result.credentials();
-                check(credentials.getCardno().equals(cardno) && credentials.getPin().equals(pin),
-                        "Return exactly the inserted credentials");
-            } else {
-                check(result.status() == CardIssueResult.Status.INSERT_FAILED && result.credentials() == null,
-                        "A zero-row insert must not report an issued card");
+    private static void rollbackFailures() throws Exception {
+        for (int failedStage = 0; failedStage < 3; failedStage++) {
+            for (boolean zeroRows : new boolean[]{false, true}) {
+                Step[] steps = {personal(), additional(), credentials()};
+                if (zeroRows) steps[failedStage].updateCount = 0;
+                else steps[failedStage].failure = new SQLException("Foreign key or database error", "23000", 1452);
+                script = new Script(Arrays.copyOf(steps, failedStage + 1));
+                Registration registration = draft("No");
+                SQLException error = expectSqlFailure(() -> REGISTRATION.submit(registration));
+                if (!zeroRows) check(error == steps[failedStage].failure, "Preserve the original SQL error");
+                check(script.commits == 0 && script.rollbacks == 1 && script.persisted.isEmpty() && script.pending.isEmpty(),
+                        "Failure at any insert must roll back all pending records without retrying");
+                check(!registration.isSubmitted() && !registration.isOutcomeUnknown(), "Allow retry after confirmed rollback");
             }
+        }
+        Step duplicateAdditional = additional();
+        duplicateAdditional.failure = duplicateKey();
+        script = new Script(personal(), duplicateAdditional);
+        expectSqlFailure(() -> REGISTRATION.submit(draft("No")));
+        check(script.rollbacks == 1, "Do not treat unrelated unique constraints as generated-ID collisions");
+    }
+
+    private static void retryAfterRollback() throws Exception {
+        Registration registration = draft("No");
+        String id = registration.getApplicationId();
+        Step fail = additional();
+        fail.failure = new SQLException("Temporary insert failure");
+        script = new Script(personal(), fail);
+        expectSqlFailure(() -> REGISTRATION.submit(registration));
+        script = new Script(personal(), additional(), credentials());
+        REGISTRATION.submit(registration);
+        check(registration.isSubmitted() && registration.getApplicationId().equals(id),
+                "A confirmed rollback must allow resubmission of the same collected application");
+        check(script.persisted.size() == 3 && script.commits == 1, "A later successful submission persists exactly one account");
+        script.verifyClosed();
+    }
+
+    private static SQLException duplicateKey() { return new SQLException("Duplicate entry", "23000", 1062); }
+
+    private static void collisionRetries() throws Exception {
+        for (boolean applicationCollision : new boolean[]{true, false}) {
+            Registration registration = draft("No");
+            String originalId = registration.getApplicationId();
+            Step failed = applicationCollision ? personal() : credentials();
+            failed.failure = duplicateKey();
+            Step personal = personal(), additional = additional(), credentials = credentials();
+            script = applicationCollision ? new Script(failed, personal, additional, credentials)
+                    : new Script(personal(), additional(), failed, personal, additional, credentials);
+            REGISTRATION.submit(registration);
+            check(applicationCollision != originalId.equals(registration.getApplicationId()),
+                    "Only regenerate the application ID for an application-ID collision");
+            check(personal.parameters.get(0).equals(additional.parameters.get(0))
+                    && additional.parameters.get(0).equals(credentials.parameters.get(2)), "Use the same ID in all records after retry");
+            check(script.rollbacks == 1 && script.commits == 1 && script.persisted.size() == 3,
+                    "Retry collisions only after rolling back the entire failed attempt");
             script.verifyClosed();
+
+            List<Step> attempts = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                if (!applicationCollision) { attempts.add(personal()); attempts.add(additional()); }
+                Step collision = applicationCollision ? personal() : credentials();
+                collision.failure = duplicateKey();
+                attempts.add(collision);
+            }
+            script = new Script(attempts.toArray(Step[]::new));
+            SQLException error = expectSqlFailure(() -> REGISTRATION.submit(draft("Yes")));
+            check(error.getMessage().contains("5 attempts"), "Report the exhausted collision retry limit");
+            check(script.commits == 0 && script.rollbacks == 5 && script.persisted.isEmpty() && script.pending.isEmpty(),
+                    "Bound both application-ID and card collisions to five attempts without partial records");
         }
     }
 
-    private static void failures() throws Exception {
-        Step personal = failing("INSERT INTO signup ");
-        script = new Script(personal);
-        expectFailure(() -> REGISTRATION.savePersonalDetails(PERSONAL), personal.failure);
-        Step additional = failing("INSERT INTO signuptwo(");
-        script = new Script(additional);
-        expectFailure(() -> { REGISTRATION.saveAdditionalDetails(additional("No")); return null; }, additional.failure);
-        Step authentication = failing("SELECT l.formno, s.name FROM login l ");
-        script = new Script(authentication);
-        expectFailure(() -> AUTHENTICATION.authenticate("0000000000000001", "0000"), authentication.failure);
-        Step eligibility = failing("SELECT s.formno FROM signup s ");
-        script = new Script(eligibility);
-        expectFailure(() -> REGISTRATION.issueCard("1234"), eligibility.failure);
-        Step duplicate = failing("SELECT cardno FROM login WHERE cardno = ?");
-        script = new Script(eligibility(true), duplicate);
-        expectFailure(() -> REGISTRATION.issueCard("1234"), duplicate.failure);
-        Step insert = failing("INSERT INTO login ");
-        script = new Script(eligibility(true), duplicate(false), insert);
-        expectFailure(() -> REGISTRATION.issueCard("1234"), insert.failure);
+    private static void concurrentSubmission() throws Exception {
+        Registration registration = draft("No");
+        script = new Script(personal(), additional(), credentials());
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            Callable<CardCredentials> submit = () -> { start.await(); return new RegistrationDao().submit(registration); };
+            Future<CardCredentials> first = pool.submit(submit), second = pool.submit(submit);
+            start.countDown();
+            check(first.get(10, TimeUnit.SECONDS) == second.get(10, TimeUnit.SECONDS), "Concurrent callers receive the same credentials");
+        }
+        check(script.commits == 1 && script.persisted.size() == 3, "Concurrent submissions must not duplicate registration");
+        script.verifyClosed();
     }
 
-    private static Step eligibility(boolean eligible) { return new Step("SELECT s.formno FROM signup s ", 0, eligible); }
-    private static Step duplicate(boolean exists) { return new Step("SELECT cardno FROM login WHERE cardno = ?", 0, exists); }
+    private static void uncertainOutcomes() throws Exception {
+        for (boolean commitAcknowledgementLost : new boolean[]{false, true}) {
+            Registration registration = draft("No");
+            script = new Script(personal(), additional(), credentials());
+            script.commitFailure = new SQLException("Commit connection lost");
+            script.commitBeforeFailure = commitAcknowledgementLost;
+            expectSqlFailure(() -> REGISTRATION.submit(registration));
+            check(registration.isOutcomeUnknown() && !registration.isSubmitted(), "Do not claim an unconfirmed commit succeeded");
+            expectSqlFailure(() -> REGISTRATION.submit(registration));
+            check(script.commits == 1 && script.rollbacks == 1, "Do not resubmit an application after an uncertain commit");
+        }
+        Registration rollbackRegistration = draft("No");
+        Step fail = additional();
+        fail.failure = new SQLException("Insert failed");
+        script = new Script(personal(), fail);
+        script.rollbackFailure = new SQLException("Rollback connection lost");
+        SQLException error = expectSqlFailure(() -> REGISTRATION.submit(rollbackRegistration));
+        check(rollbackRegistration.isOutcomeUnknown() && error.getCause().getSuppressed()[0] == script.rollbackFailure,
+                "Preserve rollback failures and block unsafe resubmission");
+        expectSqlFailure(() -> REGISTRATION.submit(rollbackRegistration));
 
-    private static Step failing(String prefix) {
-        Step step = new Step(prefix, 0, false);
-        step.failure = new SQLException("Expected test database error", "TEST", 123);
-        return step;
+        Registration committedRegistration = draft("No");
+        script = new Script(personal(), additional(), credentials());
+        script.closeFailure = new SQLException("Close failed after commit");
+        CardCredentials result = REGISTRATION.submit(committedRegistration);
+        check(result == committedRegistration.getCredentials() && committedRegistration.isSubmitted(), "Cleanup errors must not invalidate a successful commit");
+        script.verifyClosed();
     }
 
-    private static void expectFailure(Callable<?> action, SQLException expected) throws Exception {
+    private static SQLException expectSqlFailure(Callable<?> action) throws Exception {
         try {
             action.call();
             throw new AssertionError("Expected SQLException");
-        } catch (SQLException actual) {
-            check(actual == expected, "Propagate the original SQLException to the UI");
+        } catch (SQLException error) {
+            script.verifyClosed();
+            return error;
         }
-        script.verifyClosed();
     }
 
     private static void check(boolean condition, String message) {
@@ -164,6 +255,15 @@ public final class DaoTest {
         private final Deque<Step> remaining;
         private int connections;
         private int closedConnections;
+        private boolean autoCommit = true;
+        private int commits;
+        private int rollbacks;
+        private final List<List<String>> pending = new ArrayList<>();
+        private final List<List<String>> persisted = new ArrayList<>();
+        private SQLException commitFailure;
+        private SQLException rollbackFailure;
+        private SQLException closeFailure;
+        private boolean commitBeforeFailure;
 
         private Script(Step... steps) {
             this.steps = Arrays.asList(steps);
@@ -179,7 +279,27 @@ public final class DaoTest {
                         Step step = remaining.removeFirst();
                         check(((String) args[0]).startsWith(step.sqlPrefix), "Unexpected SQL: " + args[0]);
                         return step.statement();
-                    case "close": closedConnections++; return null;
+                    case "setAutoCommit":
+                        autoCommit = (boolean) args[0];
+                        check(!autoCommit, "Use an explicit transaction");
+                        return null;
+                    case "commit":
+                        commits++;
+                        if (commitFailure == null || commitBeforeFailure) {
+                            persisted.addAll(pending);
+                            pending.clear();
+                        }
+                        if (commitFailure != null) throw commitFailure;
+                        return null;
+                    case "rollback":
+                        rollbacks++;
+                        if (rollbackFailure != null) throw rollbackFailure;
+                        pending.clear();
+                        return null;
+                    case "close":
+                        closedConnections++;
+                        if (closeFailure != null) throw closeFailure;
+                        return null;
                     default: throw new AssertionError("Unexpected Connection method: " + method.getName());
                 }
             });
@@ -197,7 +317,7 @@ public final class DaoTest {
 
     private static final class Step {
         private final String sqlPrefix;
-        private final int updateCount;
+        private int updateCount;
         private final boolean hasRow;
         private final Map<String, String> columns = new HashMap<>();
         private final List<String> parameters = new ArrayList<>();
@@ -221,7 +341,9 @@ public final class DaoTest {
                         parameters.set(index, (String) args[1]);
                         return null;
                     case "executeUpdate":
+                        check(!script.autoCommit, "Every registration write must be inside the transaction");
                         if (failure != null) throw failure;
+                        if (updateCount == 1) script.pending.add(List.copyOf(parameters));
                         return updateCount;
                     case "executeQuery":
                         if (failure != null) throw failure;

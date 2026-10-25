@@ -54,6 +54,42 @@ Add your MySQL host and port options if using a remote server. Running the fresh
 schema against existing tables does not upgrade them; use the migration instead.
 Skip this migration if `isSenior` already exists, including on fresh installs.
 
+Existing installations must also apply `database/migrations/002_atomic_registration.sql`
+once before using the new registration flow:
+
+```sh
+mysql -u "$DB_USERNAME" -p < database/migrations/002_atomic_registration.sql
+```
+
+This migration uses InnoDB for all three registration tables and adds a unique
+constraint on `login.formno`, limiting each application to one card. The existing
+`login.cardno` primary key enforces card uniqueness. Existing values are retained.
+The migration reports historical applications with multiple cards and fails the
+unique-constraint addition if any remain; resolve those records explicitly before
+rerunning it. Fresh installations already include these constraints and engines.
+
+## Registration flow
+
+The signup screens share one in-memory `Registration`. Pages 1 and 2 validate and
+collect details without writing to the database. The final **Submit Application**
+button saves `signup`, `signuptwo` and `login` in one JDBC transaction, returning
+credentials only after a successful commit. An insert failure rolls back all
+three writes and leaves the final screen open with the collected details intact.
+
+Application IDs contain 20 random base-32 characters (100 random bits) and fit
+the existing `VARCHAR(20)` columns. Cards and PINs use `SecureRandom`; their
+existing 16-digit and four-digit formats are retained. Uniqueness is enforced
+by the database. Duplicate application IDs or cards trigger a full rollback and
+retry, with at most five total attempts per submission. Other errors are not
+automatically retried.
+
+The final button is disabled during submission and after success. Concurrent or
+repeated submissions of the same shared registration return its already-committed
+credentials without another write. If a commit acknowledgement or rollback fails,
+that registration is blocked from resubmission because the outcome cannot be
+confirmed. Check its application ID in the database before starting another
+application. Closing the application before final submission discards the draft.
+
 ## Compile and run
 
 Use JDK 21 and the local MySQL connector JAR. From the project root on macOS/Linux:
@@ -74,6 +110,8 @@ marks `src/main/java` as sources and `src/main/resources` as resources. Run
 
 After compiling the application, run the headless checks below. They use a test
 JDBC driver and dummy credentials; they do not connect to MySQL or open windows.
+They cover transaction rollback at every insert, uniqueness collision limits,
+concurrent submissions, uncertain commits, field mapping and JDBC cleanup.
 
 ```sh
 javac -cp out -d out src/test/java/atm/dao/DaoTest.java

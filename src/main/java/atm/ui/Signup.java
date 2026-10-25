@@ -3,18 +3,17 @@ package atm.ui;
 import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
 import atm.model.PersonalDetails;
+import atm.model.Registration;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.sql.SQLException;
-import java.util.Random;
 
 public class Signup extends JFrame {
     private final RegistrationDao registrationDao;
     private final AuthenticationDao authenticationDao;
-    private String formno;
+    private final Registration registration;
 
     private JTextField nameField;
     private JTextField fatherNameField;
@@ -33,10 +32,10 @@ public class Signup extends JFrame {
 
     private JButton nextButton;
 
-    public Signup(RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+    public Signup(Registration registration, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+        this.registration = registration;
         this.registrationDao = registrationDao;
         this.authenticationDao = authenticationDao;
-        formno = String.valueOf(1000 + new Random().nextInt(9000));
         setTitle("New Account - Application form");
         setSize(850, 780);
         setLocationRelativeTo(null);
@@ -58,8 +57,8 @@ public class Signup extends JFrame {
         add(logoLabel);
 
         // -- page heading --
-        JLabel headingLabel = new JLabel("APPLICATION FORM NO: " + formno);
-        headingLabel.setFont(new Font("Raleway", Font.BOLD, 30));
+        JLabel headingLabel = new JLabel("APPLICATION FORM NO: " + registration.getApplicationId());
+        headingLabel.setFont(new Font("Raleway", Font.BOLD, 24));
         headingLabel.setBounds(0, 100, 850, 40);
         headingLabel.setHorizontalAlignment(SwingConstants.CENTER);
         add(headingLabel);
@@ -203,6 +202,7 @@ public class Signup extends JFrame {
         nextButton.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent ae) {
+                if (!nextButton.isEnabled()) return;
                 String name = nameField.getText().trim();
                 String fname = fatherNameField.getText().trim();
                 String email = emailField.getText().trim();
@@ -227,20 +227,15 @@ public class Signup extends JFrame {
                     return;
                 }
 
-                PersonalDetails details = new PersonalDetails(formno, name, fname, gender,
+                PersonalDetails details = new PersonalDetails(name, fname, gender,
                         email, Marital, address, city, pincode, state);
                 try {
-                    int rows = registrationDao.savePersonalDetails(details);
-                    if(rows == 1) {
-                        new Signup2(formno, registrationDao, authenticationDao).setVisible(true);
-                        Signup.this.dispose();
-                    } else {
-                        JOptionPane.showMessageDialog(Signup.this,"Insertion failed! please try again");
-                    }
-                } catch (SQLException e) {
-                    JOptionPane.showMessageDialog(Signup.this,"Database error : "+ e.getMessage(),"DB error",JOptionPane.ERROR_MESSAGE);
-                    e.printStackTrace();
+                    nextButton.setEnabled(false);
+                    registration.setPersonalDetails(details);
+                    new Signup2(registration, registrationDao, authenticationDao).setVisible(true);
+                    Signup.this.dispose();
                 } catch (Exception e) {
+                    nextButton.setEnabled(true);
                     e.printStackTrace();
                 }
             }
