@@ -4,6 +4,7 @@ import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
 import atm.dao.AccountDao;
 import atm.dao.TransactionDao;
+import atm.service.AccountService;
 import atm.ui.AppNavigation;
 
 import javax.swing.*;
@@ -13,8 +14,8 @@ public class App {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-                new AppNavigation(new RegistrationDao(), new AuthenticationDao(),
-                        new AccountDao(), new TransactionDao()).showLogin();
+                AccountService accountService = new AccountService(new AccountDao(), new TransactionDao());
+                new AppNavigation(new RegistrationDao(), new AuthenticationDao(), accountService).showLogin();
             }
         });
     }

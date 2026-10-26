@@ -1,10 +1,8 @@
 package atm.ui;
 
-import atm.dao.AccountDao;
-import atm.dao.AccountOperationException;
 import atm.dao.AuthenticationDao;
-import atm.dao.TransactionDao;
-import atm.model.Account;
+import atm.service.AccountService;
+import atm.service.AccountOperationException;
 import atm.model.Money;
 import atm.model.Session;
 import atm.model.Transaction;
@@ -30,20 +28,18 @@ import java.util.function.Consumer;
 
 public final class Dashboard extends JFrame {
     private final Session session;
-    private final AccountDao accountDao;
-    private final TransactionDao transactionDao;
+    private final AccountService accountService;
     private final AuthenticationDao authenticationDao;
     private final AppNavigation navigation;
     private final List<JButton> buttons = new ArrayList<>();
     private final JLabel status = new JLabel("Choose an action.");
     private boolean busy;
 
-    Dashboard(Session session, AccountDao accountDao, TransactionDao transactionDao,
+    Dashboard(Session session, AccountService accountService,
               AuthenticationDao authenticationDao, AppNavigation navigation) {
         session.requireActive();
         this.session = session;
-        this.accountDao = accountDao;
-        this.transactionDao = transactionDao;
+        this.accountService = accountService;
         this.authenticationDao = authenticationDao;
         this.navigation = navigation;
         setTitle("ATM Dashboard");
@@ -95,24 +91,21 @@ public final class Dashboard extends JFrame {
             return;
         }
         String action = type == TransactionType.DEPOSIT ? "Deposit" : "Withdrawal";
-        runTask(() -> accountDao.postTransaction(session.getAccountId(), amount, type),
+        runTask(() -> type == TransactionType.DEPOSIT
+                        ? accountService.deposit(session, amount) : accountService.withdraw(session, amount),
                 account -> JOptionPane.showMessageDialog(this, action + " successful.\nBalance: " + account.balance().toPlainString()),
                 "Unable to confirm the " + action.toLowerCase(java.util.Locale.ROOT)
                         + ". Check balance and mini statement before trying again.");
     }
 
     private void showBalance() {
-        runTask(() -> {
-            Account account = accountDao.findById(session.getAccountId());
-            if (account == null) throw new AccountOperationException(AccountOperationException.Reason.ACCOUNT_NOT_FOUND);
-            return account;
-        }, account -> JOptionPane.showMessageDialog(this, account.balanceVerified()
+        runTask(() -> accountService.getAccount(session), account -> JOptionPane.showMessageDialog(this, account.balanceVerified()
                 ? "Balance: " + account.balance().toPlainString()
                 : "Balance is pending administrative reconciliation."), "Unable to retrieve the balance. Please try again.");
     }
 
     private void showMiniStatement() {
-        runTask(() -> transactionDao.findRecentByAccountId(session.getAccountId()), this::displayStatement,
+        runTask(() -> accountService.getRecentTransactions(session), this::displayStatement,
                 "Unable to retrieve the mini statement. Please try again.");
     }
 

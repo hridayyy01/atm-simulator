@@ -1,4 +1,4 @@
-package atm.dao;
+package atm.service;
 
 /** Business outcomes that the UI can explain without exposing driver errors. */
 public final class AccountOperationException extends IllegalStateException {

@@ -3,6 +3,7 @@ package atm.dao;
 import atm.db.Conn;
 import atm.model.Transaction;
 import atm.model.TransactionType;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -10,9 +11,22 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.Instant;
 import java.util.List;
 
 public class TransactionDao {
+    /** Participates in the caller's transaction without opening or committing a connection. */
+    public void insert(Connection con, String accountId, TransactionType type, BigDecimal amount, Instant occurredAt) throws SQLException {
+        try (PreparedStatement ps = con.prepareStatement("INSERT INTO transactions "
+                + "(account_id, transaction_type, amount, occurred_at) VALUES (?, ?, ?, ?)")) {
+            ps.setString(1, accountId);
+            ps.setString(2, type.name());
+            ps.setBigDecimal(3, amount);
+            ps.setObject(4, LocalDateTime.ofInstant(occurredAt, ZoneOffset.UTC));
+            if (ps.executeUpdate() != 1) throw new SQLException("Transaction insert failed.");
+        }
+    }
+
     public List<Transaction> findByAccountId(String accountId) throws SQLException {
         return readHistory(accountId, false);
     }

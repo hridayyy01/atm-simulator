@@ -9,11 +9,13 @@ src/main/java/atm/
   App.java                 Application entry point
   db/Conn.java             JDBC connection configuration
   dao/                     Registration, authentication, accounts and history SQL
+  service/                 Account validation and transaction coordination
   model/                   Plain Java data models and explicit login sessions
   security/                JDK PIN hashing and verification
   tools/                   Offline PIN and account upgrade utilities
   ui/                      Swing screens and shared UI constants
 src/test/java/atm/dao/      Headless DAO regression tests
+src/test/java/atm/service/  Service validation and concurrent-operation tests
 src/test/java/atm/security/ PIN hashing regression tests
 src/test/java/atm/tools/    Legacy money/date conversion tests
 src/main/resources/icons/  Application images
@@ -104,7 +106,7 @@ timezone. No monetary value passes through `double` or `float`.
 Migrated accounts have `balance_verified = FALSE`: their zero balance is a
 placeholder, not an assertion of available funds. An administrator must reconcile
 the retained history and establish the authoritative balance before marking it
-verified. Any future balance-changing operation must reject unverified balances.
+verified. Account operations reject unverified balances.
 The migration report includes imported net movement as reconciliation evidence;
 it does not infer an opening balance or silently discard ambiguous records.
 
@@ -113,6 +115,22 @@ See MySQL's [exact numeric types](https://dev.mysql.com/doc/refman/8.4/en/precis
 and [date/time types](https://dev.mysql.com/doc/refman/8.4/en/datetime.html), and
 JDK [BigDecimal](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html).
 
+`AccountService.deposit(Session, BigDecimal)` and `withdraw(Session, BigDecimal)`
+are the entry points for money operations. The service validates an active
+session, a non-null positive amount and exact `DECIMAL(19,2)` representability
+before opening JDBC. Trailing zeros can be normalized losslessly; fractional
+cents and overflow are rejected without rounding.
+
+The service owns one connection and disables auto-commit. `AccountDao` reads the
+primary-key account with `SELECT ... FOR UPDATE`, so funds are checked against
+the latest locked balance. The service rejects insufficient funds and balance
+overflow, then passes that same connection to the balance update and transaction
+insert. It commits both together or rolls back on any failure. The DAOs close
+their statements and results; the service closes the connection. The lock remains
+held through commit/rollback, serializing operations on the same account across
+independent sessions. See MySQL's [locking-read documentation](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html).
+There are no automatic retries of monetary operations after an uncertain commit.
+
 ## Login and ATM dashboard
 
 The application starts at login. **Register** opens a new in-memory application;
@@ -120,8 +138,8 @@ successful registration returns to a blank login screen. Closing a registration
 screen cancels that draft and returns to login.
 
 Successful authentication creates an explicit `Session` with the account ID and
-holder identity. It contains no PIN. The dashboard receives that session and its
-DAO dependencies through its constructor. All account operations use the session's
+holder identity. It contains no PIN. The dashboard receives that session, the
+account service and its other dependencies through its constructor. All account operations use the session's
 account ID, with no global current-user state.
 
 The dashboard provides these actions:
@@ -197,7 +215,7 @@ Use JDK 21 and the local MySQL connector JAR. From the project root on macOS/Lin
 ```sh
 JDBC_JAR="../../mysql-connector-j-9.7.0/mysql-connector-j-9.7.0.jar"
 mkdir -p out
-javac -cp "$JDBC_JAR" -d out src/main/java/atm/App.java src/main/java/atm/db/*.java src/main/java/atm/dao/*.java src/main/java/atm/model/*.java src/main/java/atm/security/*.java src/main/java/atm/tools/*.java src/main/java/atm/ui/*.java
+javac -cp "$JDBC_JAR" -d out src/main/java/atm/App.java src/main/java/atm/db/*.java src/main/java/atm/dao/*.java src/main/java/atm/service/*.java src/main/java/atm/model/*.java src/main/java/atm/security/*.java src/main/java/atm/tools/*.java src/main/java/atm/ui/*.java
 cp -R src/main/resources/. out/
 java -cp "out:$JDBC_JAR" atm.App
 ```
@@ -215,17 +233,25 @@ concurrent submissions, uncertain commits, field mapping, session invalidation,
 deposits/withdrawals, ledger rollback, mini statement limits, PIN changes and JDBC
 cleanup. These checks use scripted JDBC, not a running MySQL server or graphical UI.
 
+`AccountServiceTest` additionally runs two independent sessions against a stateful
+JDBC transaction/row-lock model. It checks competing and affordable withdrawals,
+concurrent deposits, exact amounts, full-balance withdrawal, validation before
+JDBC, and rollback when a ledger insert fails. This tests service/DAO coordination;
+it does not substitute for a live InnoDB integration test.
+
 ```sh
-javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/security/PinHasherTest.java src/test/java/atm/tools/AccountMigrationTest.java
+javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/service/AccountServiceTest.java src/test/java/atm/security/PinHasherTest.java src/test/java/atm/tools/AccountMigrationTest.java
 java -Djava.awt.headless=true -cp out atm.security.PinHasherTest
 java -Djava.awt.headless=true -cp out atm.tools.AccountMigrationTest
 DB_URL=jdbc:atm-dao-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.dao.DaoTest
+DB_URL=jdbc:atm-service-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.service.AccountServiceTest
 ```
 
-`App` creates the four concrete DAOs and passes them to `AppNavigation`, which
-injects each screen's dependencies through its constructor.
-DAOs own JDBC resources and return plain data; validation, dialogs and navigation
-remain in the Swing screens.
+`App` creates the concrete DAOs, injects the account/history DAOs into
+`AccountService`, and passes the service and other DAOs to `AppNavigation`.
+Screen dependencies are injected through constructors. The service owns account
+rules and write transactions, DAOs own SQL, and Swing owns input prompts, dialogs
+and navigation.
 
 For a manual desktop check after database setup: launch `atm.App`, open registration
 from login, register and return to login, authenticate, deposit and withdraw funds,

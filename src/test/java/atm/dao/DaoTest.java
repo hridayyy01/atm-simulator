@@ -8,6 +8,8 @@ import atm.model.PersonalDetails;
 import atm.security.PinHasher;
 import atm.tools.MigratePins;
 import atm.tools.MigrateAccounts;
+import atm.service.AccountService;
+import atm.service.AccountOperationException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.Instant;
@@ -80,6 +82,12 @@ public final class DaoTest {
         catch (IllegalStateException expected) { }
     }
 
+    private static atm.model.Account postTransaction(BigDecimal amount, atm.model.TransactionType type) throws SQLException {
+        AccountService service = new AccountService(new AccountDao(), new TransactionDao());
+        atm.model.Session session = new atm.model.Session(new AuthenticatedUser(ACCOUNT_ID, "1234", "Test User"));
+        return type == atm.model.TransactionType.DEPOSIT ? service.deposit(session, amount) : service.withdraw(session, amount);
+    }
+
     private static Step lockedAccount(String balance, boolean verified) {
         Step lookup = new Step("SELECT account_id, formno, balance, balance_verified FROM accounts ", 0, true);
         lookup.columns.putAll(Map.of("account_id", ACCOUNT_ID, "formno", "1234", "balance", balance,
@@ -93,7 +101,7 @@ public final class DaoTest {
             Step update = new Step("UPDATE accounts SET balance = ? WHERE account_id = ?", 1, false);
             Step ledger = new Step("INSERT INTO transactions ", 1, false);
             script = new Script(lookup, update, ledger);
-            var result = new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), type);
+            var result = postTransaction(new BigDecimal("0.20"), type);
             BigDecimal expected = new BigDecimal(type == atm.model.TransactionType.DEPOSIT ? "100.30" : "99.90");
             check(result.balance().equals(expected) && update.typedParameters.get(1).equals(expected), "Update balances with exact decimal arithmetic");
             check(lookup.actualSql.endsWith("FOR UPDATE") && lookup.parameters.equals(List.of(ACCOUNT_ID)), "Lock only the session's account");
@@ -111,7 +119,7 @@ public final class DaoTest {
             if (reason == AccountOperationException.Reason.ACCOUNT_NOT_FOUND) lookup.rows = List.of();
             script = new Script(lookup);
             try {
-                new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("2.00"),
+                postTransaction(new BigDecimal("2.00"),
                         reason == AccountOperationException.Reason.INSUFFICIENT_FUNDS ? atm.model.TransactionType.WITHDRAWAL : atm.model.TransactionType.DEPOSIT);
                 throw new AssertionError("Expected account operation rejection");
             } catch (AccountOperationException expected) {
@@ -127,7 +135,7 @@ public final class DaoTest {
             if (failLedger) ledger.failure = new SQLException("Ledger insert failed");
             else update.failure = new SQLException("Balance update failed");
             script = failLedger ? new Script(lookup, update, ledger) : new Script(lookup, update);
-            expectSqlFailure(() -> new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
+            expectSqlFailure(() -> postTransaction(new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
             check(script.rollbacks == 1 && script.commits == 0 && script.persisted.isEmpty() && script.pending.isEmpty(),
                     "Roll back partial balance/ledger changes on SQL failures");
         }
@@ -135,13 +143,13 @@ public final class DaoTest {
                 new Step("INSERT INTO transactions ", 1, false));
         script.commitFailure = new SQLException("Lost commit acknowledgement");
         script.commitBeforeFailure = true;
-        expectSqlFailure(() -> new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
+        expectSqlFailure(() -> postTransaction(new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
         check(script.commits == 1 && script.persisted.size() == 2 && script.connections == 1,
                 "Never automatically repeat a monetary operation after an uncertain commit");
 
         for (String invalid : new String[]{"0", "-1", "0.001", "100000000000000000.00"}) {
             script = new Script();
-            try { new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal(invalid), atm.model.TransactionType.DEPOSIT); throw new AssertionError("Reject invalid amounts"); }
+            try { postTransaction(new BigDecimal(invalid), atm.model.TransactionType.DEPOSIT); throw new AssertionError("Reject invalid amounts"); }
             catch (IllegalArgumentException expected) { check(script.connections == 0, "Validate amounts before opening JDBC"); }
         }
         Step history = new Step("SELECT transaction_id, account_id, transaction_type, amount, occurred_at FROM transactions ", 0, false);

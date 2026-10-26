@@ -1,9 +1,8 @@
 package atm.ui;
 
-import atm.dao.AccountDao;
 import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
-import atm.dao.TransactionDao;
+import atm.service.AccountService;
 import atm.model.Registration;
 import atm.model.Session;
 import javax.swing.JFrame;
@@ -14,16 +13,14 @@ import java.awt.event.WindowEvent;
 public final class AppNavigation {
     private final RegistrationDao registrationDao;
     private final AuthenticationDao authenticationDao;
-    private final AccountDao accountDao;
-    private final TransactionDao transactionDao;
+    private final AccountService accountService;
     private JFrame currentScreen;
 
     public AppNavigation(RegistrationDao registrationDao, AuthenticationDao authenticationDao,
-                         AccountDao accountDao, TransactionDao transactionDao) {
+                         AccountService accountService) {
         this.registrationDao = registrationDao;
         this.authenticationDao = authenticationDao;
-        this.accountDao = accountDao;
-        this.transactionDao = transactionDao;
+        this.accountService = accountService;
     }
 
     public void showLogin() {
@@ -43,7 +40,7 @@ public final class AppNavigation {
     }
 
     void showDashboard(Session session) {
-        show(new Dashboard(session, accountDao, transactionDao, authenticationDao, this));
+        show(new Dashboard(session, accountService, authenticationDao, this));
     }
 
     private void showRegistrationScreen(JFrame screen) {
