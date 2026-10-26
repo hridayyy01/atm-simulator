@@ -1,7 +1,5 @@
 package atm.ui;
 
-import atm.dao.AuthenticationDao;
-import atm.dao.RegistrationDao;
 import atm.model.AdditionalDetails;
 import atm.model.Registration;
 
@@ -11,8 +9,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 
 public class Signup2 extends JFrame {
-    private final RegistrationDao registrationDao;
-    private final AuthenticationDao authenticationDao;
+    private final AppNavigation navigation;
 
     private final Registration registration;
 
@@ -32,10 +29,9 @@ public class Signup2 extends JFrame {
     private JButton nextButton;
 
 
-    Signup2(Registration registration, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+    Signup2(Registration registration, AppNavigation navigation) {
         this.registration = registration;
-        this.registrationDao = registrationDao;
-        this.authenticationDao = authenticationDao;
+        this.navigation = navigation;
         setTitle("Bank ATM - registration page 2");
         setSize(850,780);
         setLocationRelativeTo(null);
@@ -166,8 +162,7 @@ public class Signup2 extends JFrame {
                     registration.setAdditionalDetails(details);
 
                     JOptionPane.showMessageDialog(Signup2.this, "Details captured. Submit on the next screen to save your application.");
-                    new Signup3(registration, registrationDao, authenticationDao).setVisible(true);
-                    Signup2.this.dispose();
+                    navigation.showSignup3(registration);
                 } catch (Exception e) {
                     nextButton.setEnabled(true);
                     JOptionPane.showMessageDialog(Signup2.this,"Unable to continue. Please try again.");

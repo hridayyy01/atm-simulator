@@ -2,8 +2,9 @@ package atm;
 
 import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
-import atm.model.Registration;
-import atm.ui.Signup;
+import atm.dao.AccountDao;
+import atm.dao.TransactionDao;
+import atm.ui.AppNavigation;
 
 import javax.swing.*;
 
@@ -12,9 +13,8 @@ public class App {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-                RegistrationDao registrationDao = new RegistrationDao();
-                AuthenticationDao authenticationDao = new AuthenticationDao();
-                new Signup(new Registration(), registrationDao, authenticationDao).setVisible(true);
+                new AppNavigation(new RegistrationDao(), new AuthenticationDao(),
+                        new AccountDao(), new TransactionDao()).showLogin();
             }
         });
     }

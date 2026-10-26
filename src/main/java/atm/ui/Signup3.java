@@ -1,6 +1,5 @@
 package atm.ui;
 
-import atm.dao.AuthenticationDao;
 import atm.dao.RegistrationDao;
 import atm.model.CardCredentials;
 import atm.model.Registration;
@@ -13,16 +12,16 @@ import java.util.Arrays;
 
 public class Signup3 extends JFrame {
     private final RegistrationDao registrationDao;
-    private final AuthenticationDao authenticationDao;
+    private final AppNavigation navigation;
     private final Registration registration;
     private boolean submitting;
     JTextField formnoField;
     JButton generateButton;
 
-    Signup3(Registration registration, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+    Signup3(Registration registration, RegistrationDao registrationDao, AppNavigation navigation) {
         this.registration = registration;
         this.registrationDao = registrationDao;
-        this.authenticationDao = authenticationDao;
+        this.navigation = navigation;
         setTitle("ATM signup - step 3");
         setSize(400,400);
         setLayout(null);
@@ -63,8 +62,7 @@ public class Signup3 extends JFrame {
                         Arrays.fill(pin, '\0');
                         credentials.clearPin();
                     }
-                    Signup3.this.dispose();
-                    new Login(authenticationDao).setVisible(true);
+                    navigation.showLogin();
                 } catch(SQLException se) {
                     String message = registration.isOutcomeUnknown()
                             ? "Submission outcome could not be confirmed. Check application "

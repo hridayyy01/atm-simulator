@@ -44,6 +44,9 @@ public final class DaoTest {
                 MigratePins.main(new String[0]);
                 return;
             }
+            sessionLifecycle();
+            bankingActions();
+            pinChange();
             accountAndTransactions();
             accountMigration();
             pinMigration();
@@ -59,6 +62,133 @@ public final class DaoTest {
             System.out.println("PASS: atomic registration, rollback, bounded collision retries, duplicate submissions, authentication and cleanup.");
         } finally {
             DriverManager.deregisterDriver(driver);
+        }
+    }
+
+    private static void sessionLifecycle() {
+        atm.model.Session first = new atm.model.Session(new AuthenticatedUser(ACCOUNT_ID, "1234", "First User"));
+        atm.model.Session second = new atm.model.Session(new AuthenticatedUser("another-account", "5678", "Second User"));
+        check(first.isActive() && first.getAccountId().equals(ACCOUNT_ID) && first.getName().equals("First User"),
+                "Carry only the authenticated account identity into a session");
+        first.logout();
+        first.logout();
+        check(!first.isActive() && second.isActive() && second.getAccountId().equals("another-account"),
+                "Logout invalidates only that session; later users have independent identity");
+        try { first.getAccountId(); throw new AssertionError("Reject stale account access after logout"); }
+        catch (IllegalStateException expected) { }
+        try { first.getName(); throw new AssertionError("Reject stale user access after logout"); }
+        catch (IllegalStateException expected) { }
+    }
+
+    private static Step lockedAccount(String balance, boolean verified) {
+        Step lookup = new Step("SELECT account_id, formno, balance, balance_verified FROM accounts ", 0, true);
+        lookup.columns.putAll(Map.of("account_id", ACCOUNT_ID, "formno", "1234", "balance", balance,
+                "balance_verified", Boolean.toString(verified)));
+        return lookup;
+    }
+
+    private static void bankingActions() throws Exception {
+        for (atm.model.TransactionType type : atm.model.TransactionType.values()) {
+            Step lookup = lockedAccount("100.10", true);
+            Step update = new Step("UPDATE accounts SET balance = ? WHERE account_id = ?", 1, false);
+            Step ledger = new Step("INSERT INTO transactions ", 1, false);
+            script = new Script(lookup, update, ledger);
+            var result = new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), type);
+            BigDecimal expected = new BigDecimal(type == atm.model.TransactionType.DEPOSIT ? "100.30" : "99.90");
+            check(result.balance().equals(expected) && update.typedParameters.get(1).equals(expected), "Update balances with exact decimal arithmetic");
+            check(lookup.actualSql.endsWith("FOR UPDATE") && lookup.parameters.equals(List.of(ACCOUNT_ID)), "Lock only the session's account");
+            check(ledger.parameters.get(0).equals(ACCOUNT_ID) && ledger.parameters.get(1).equals(type.name())
+                    && ledger.typedParameters.get(3).equals(new BigDecimal("0.20"))
+                    && ((LocalDateTime) ledger.typedParameters.get(4)).getNano() % 1000 == 0,
+                    "Record the account-scoped amount, type and microsecond timestamp");
+            check(script.commits == 1 && script.rollbacks == 0 && script.persisted.size() == 2,
+                    "Commit the balance and statement entry together");
+            script.verifyClosed();
+        }
+        for (AccountOperationException.Reason reason : AccountOperationException.Reason.values()) {
+            Step lookup = lockedAccount(reason == AccountOperationException.Reason.BALANCE_LIMIT
+                    ? "99999999999999999.99" : "1.00", reason != AccountOperationException.Reason.BALANCE_UNVERIFIED);
+            if (reason == AccountOperationException.Reason.ACCOUNT_NOT_FOUND) lookup.rows = List.of();
+            script = new Script(lookup);
+            try {
+                new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("2.00"),
+                        reason == AccountOperationException.Reason.INSUFFICIENT_FUNDS ? atm.model.TransactionType.WITHDRAWAL : atm.model.TransactionType.DEPOSIT);
+                throw new AssertionError("Expected account operation rejection");
+            } catch (AccountOperationException expected) {
+                check(expected.getReason() == reason, "Report the safe business reason");
+            }
+            check(script.rollbacks == 1 && script.commits == 0 && script.persisted.isEmpty(), "Rejected operations must not change balances or history");
+            script.verifyClosed();
+        }
+        for (boolean failLedger : new boolean[]{false, true}) {
+            Step lookup = lockedAccount("1.00", true);
+            Step update = new Step("UPDATE accounts SET balance = ? WHERE account_id = ?", 1, false);
+            Step ledger = new Step("INSERT INTO transactions ", 1, false);
+            if (failLedger) ledger.failure = new SQLException("Ledger insert failed");
+            else update.failure = new SQLException("Balance update failed");
+            script = failLedger ? new Script(lookup, update, ledger) : new Script(lookup, update);
+            expectSqlFailure(() -> new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
+            check(script.rollbacks == 1 && script.commits == 0 && script.persisted.isEmpty() && script.pending.isEmpty(),
+                    "Roll back partial balance/ledger changes on SQL failures");
+        }
+        script = new Script(lockedAccount("1.00", true), new Step("UPDATE accounts SET balance = ?", 1, false),
+                new Step("INSERT INTO transactions ", 1, false));
+        script.commitFailure = new SQLException("Lost commit acknowledgement");
+        script.commitBeforeFailure = true;
+        expectSqlFailure(() -> new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal("0.20"), atm.model.TransactionType.DEPOSIT));
+        check(script.commits == 1 && script.persisted.size() == 2 && script.connections == 1,
+                "Never automatically repeat a monetary operation after an uncertain commit");
+
+        for (String invalid : new String[]{"0", "-1", "0.001", "100000000000000000.00"}) {
+            script = new Script();
+            try { new AccountDao().postTransaction(ACCOUNT_ID, new BigDecimal(invalid), atm.model.TransactionType.DEPOSIT); throw new AssertionError("Reject invalid amounts"); }
+            catch (IllegalArgumentException expected) { check(script.connections == 0, "Validate amounts before opening JDBC"); }
+        }
+        Step history = new Step("SELECT transaction_id, account_id, transaction_type, amount, occurred_at FROM transactions ", 0, false);
+        script = new Script(history);
+        check(new TransactionDao().findRecentByAccountId(ACCOUNT_ID).isEmpty(), "Support an empty mini statement");
+        check(history.actualSql.endsWith("ORDER BY occurred_at DESC, transaction_id DESC LIMIT 10")
+                && history.parameters.equals(List.of(ACCOUNT_ID)), "Limit mini statements to this account's ten newest entries");
+        script.verifyClosed();
+    }
+
+    private static void pinChange() throws Exception {
+        char[] current = {'0','0','4','2'}, next = {'9','8','7','6'};
+        try {
+            Step lookup = new Step("SELECT l.cardno, l.pin_hash FROM login l ", 0, true);
+            lookup.columns.putAll(Map.of("cardno", "0000000000000001", "pin_hash", PIN_FIXTURE));
+            Step update = new Step("UPDATE login SET pin_hash = ? WHERE cardno = ?", 1, false);
+            script = new Script(lookup, update);
+            check(AUTHENTICATION.changePin(ACCOUNT_ID, current, next), "Allow a verified PIN change");
+            check(lookup.actualSql.endsWith("FOR UPDATE") && lookup.parameters.equals(List.of(ACCOUNT_ID)), "Verify the PIN under the session account's lock");
+            String hash = update.parameters.get(0);
+            check(PinHasher.verify(next, hash) && !PinHasher.verify(current, hash)
+                    && update.parameters.get(1).equals("0000000000000001"), "Update only the selected account's salted PIN hash");
+            check(script.commits == 1 && script.rollbacks == 0, "Commit a successful PIN change");
+            script.verifyClosed();
+            for (char[] supplied : new char[][]{next, current}) {
+                Step login = new Step("SELECT l.formno, s.name, l.pin_hash, a.account_id FROM login l ", 0, true);
+                login.columns.putAll(Map.of("account_id", ACCOUNT_ID, "formno", "1234", "name", "Test User", "pin_hash", hash));
+                script = new Script(login);
+                check((AUTHENTICATION.authenticate("0000000000000001", supplied) != null) == (supplied == next),
+                        "After a PIN change, accept the new PIN and reject the old one");
+                script.verifyClosed();
+            }
+            lookup = new Step("SELECT l.cardno, l.pin_hash FROM login l ", 0, true);
+            lookup.columns.putAll(Map.of("cardno", "0000000000000001", "pin_hash", PIN_FIXTURE));
+            script = new Script(lookup);
+            check(!AUTHENTICATION.changePin(ACCOUNT_ID, next, current), "Reject an incorrect current PIN without writing a replacement");
+            check(script.rollbacks == 1 && script.commits == 0 && script.persisted.isEmpty(), "Do not commit failed PIN verification");
+            script.verifyClosed();
+            lookup = new Step("SELECT l.cardno, l.pin_hash FROM login l ", 0, true);
+            lookup.columns.putAll(Map.of("cardno", "0000000000000001", "pin_hash", PIN_FIXTURE));
+            update = new Step("UPDATE login SET pin_hash = ? WHERE cardno = ?", 1, false);
+            update.failure = new SQLException("PIN update failed");
+            script = new Script(lookup, update);
+            expectSqlFailure(() -> AUTHENTICATION.changePin(ACCOUNT_ID, current, next));
+            check(script.commits == 0 && script.rollbacks == 1, "Roll back a failed PIN update");
+        } finally {
+            Arrays.fill(current, '\0'); Arrays.fill(next, '\0');
         }
     }
 
@@ -521,7 +651,8 @@ public final class DaoTest {
                     case "prepareStatement":
                         check(!remaining.isEmpty(), "Unexpected database operation");
                         Step step = remaining.removeFirst();
-                        check(((String) args[0]).startsWith(step.sqlPrefix), "Unexpected SQL: " + args[0]);
+                        step.actualSql = (String) args[0];
+                        check(step.actualSql.startsWith(step.sqlPrefix), "Unexpected SQL: " + args[0]);
                         return step.statement();
                     case "setAutoCommit":
                         autoCommit = (boolean) args[0];
@@ -561,6 +692,7 @@ public final class DaoTest {
 
     private static final class Step {
         private final String sqlPrefix;
+        private String actualSql;
         private int updateCount;
         private final boolean hasRow;
         private final Map<String, String> columns = new HashMap<>();

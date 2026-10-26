@@ -1,6 +1,6 @@
 # ATM simulator
 
-Java Swing ATM registration and login application.
+Java Swing ATM application with registration, login and account operations.
 
 ## Project layout
 
@@ -9,7 +9,7 @@ src/main/java/atm/
   App.java                 Application entry point
   db/Conn.java             JDBC connection configuration
   dao/                     Registration, authentication, accounts and history SQL
-  model/                   Plain Java data models
+  model/                   Plain Java data models and explicit login sessions
   security/                JDK PIN hashing and verification
   tools/                   Offline PIN and account upgrade utilities
   ui/                      Swing screens and shared UI constants
@@ -113,6 +113,41 @@ See MySQL's [exact numeric types](https://dev.mysql.com/doc/refman/8.4/en/precis
 and [date/time types](https://dev.mysql.com/doc/refman/8.4/en/datetime.html), and
 JDK [BigDecimal](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html).
 
+## Login and ATM dashboard
+
+The application starts at login. **Register** opens a new in-memory application;
+successful registration returns to a blank login screen. Closing a registration
+screen cancels that draft and returns to login.
+
+Successful authentication creates an explicit `Session` with the account ID and
+holder identity. It contains no PIN. The dashboard receives that session and its
+DAO dependencies through its constructor. All account operations use the session's
+account ID, with no global current-user state.
+
+The dashboard provides these actions:
+
+- **Deposit / Withdrawal:** accept a positive exact decimal amount, lock the account
+  row, and commit the balance update and ledger entry together. Withdrawals reject
+  insufficient funds; both actions reject unverified legacy balances. Failed
+  writes roll back. Monetary operations are never automatically retried after a
+  database error; check balance and mini statement if a commit was unconfirmed.
+- **Balance:** fetch the latest balance; unverified legacy accounts display a
+  reconciliation notice instead of the placeholder zero.
+- **Mini Statement:** show this account's ten newest transactions, newest first,
+  with UTC timestamps, transaction types and exact decimal amounts.
+- **Change PIN:** require the current PIN, a different four-digit new PIN and its
+  confirmation. The DAO locks the credentials, verifies the current salted hash
+  and stores a new salted hash. All three inputs use password fields; temporary
+  PIN buffers are cleared. The new PIN is required for the next login.
+- **Logout:** invalidate the session, dispose the dashboard and create a fresh login
+  screen with empty fields. Closing the dashboard performs the same logout.
+
+Login and dashboard database work runs in `SwingWorker`s, keeping the event thread
+responsive. Actions are disabled while work is in progress; logout waits for a
+pending operation to finish. Disposed screens ignore stale results. Dialogs and
+screen changes run on the event thread. `AppNavigation` is a small concrete factory
+that wires dependencies and keeps one application screen visible.
+
 ## PIN storage
 
 Login uses `JPasswordField` and passes a `char[]` to the DAO. New PINs are generated
@@ -176,7 +211,9 @@ marks `src/main/java` as sources and `src/main/resources` as resources. Run
 After compiling the application, run the headless checks below. They use a test
 JDBC driver and dummy credentials; they do not connect to MySQL or open windows.
 They cover transaction rollback at every insert, uniqueness collision limits,
-concurrent submissions, uncertain commits, field mapping and JDBC cleanup.
+concurrent submissions, uncertain commits, field mapping, session invalidation,
+deposits/withdrawals, ledger rollback, mini statement limits, PIN changes and JDBC
+cleanup. These checks use scripted JDBC, not a running MySQL server or graphical UI.
 
 ```sh
 javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/security/PinHasherTest.java src/test/java/atm/tools/AccountMigrationTest.java
@@ -185,6 +222,12 @@ java -Djava.awt.headless=true -cp out atm.tools.AccountMigrationTest
 DB_URL=jdbc:atm-dao-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.dao.DaoTest
 ```
 
-`App` creates the registration and authentication DAOs and passes them through screen constructors.
+`App` creates the four concrete DAOs and passes them to `AppNavigation`, which
+injects each screen's dependencies through its constructor.
 DAOs own JDBC resources and return plain data; validation, dialogs and navigation
 remain in the Swing screens.
+
+For a manual desktop check after database setup: launch `atm.App`, open registration
+from login, register and return to login, authenticate, deposit and withdraw funds,
+check balance and mini statement, change PIN, then log out. Confirm the new login
+fields are empty, the old PIN is rejected, and the new PIN opens a new session.

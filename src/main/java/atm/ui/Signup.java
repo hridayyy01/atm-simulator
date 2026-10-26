@@ -1,7 +1,5 @@
 package atm.ui;
 
-import atm.dao.AuthenticationDao;
-import atm.dao.RegistrationDao;
 import atm.model.PersonalDetails;
 import atm.model.Registration;
 
@@ -11,8 +9,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 
 public class Signup extends JFrame {
-    private final RegistrationDao registrationDao;
-    private final AuthenticationDao authenticationDao;
+    private final AppNavigation navigation;
     private final Registration registration;
 
     private JTextField nameField;
@@ -32,10 +29,9 @@ public class Signup extends JFrame {
 
     private JButton nextButton;
 
-    public Signup(Registration registration, RegistrationDao registrationDao, AuthenticationDao authenticationDao) {
+    Signup(Registration registration, AppNavigation navigation) {
         this.registration = registration;
-        this.registrationDao = registrationDao;
-        this.authenticationDao = authenticationDao;
+        this.navigation = navigation;
         setTitle("New Account - Application form");
         setSize(850, 780);
         setLocationRelativeTo(null);
@@ -232,8 +228,7 @@ public class Signup extends JFrame {
                 try {
                     nextButton.setEnabled(false);
                     registration.setPersonalDetails(details);
-                    new Signup2(registration, registrationDao, authenticationDao).setVisible(true);
-                    Signup.this.dispose();
+                    navigation.showSignup2(registration);
                 } catch (Exception e) {
                     nextButton.setEnabled(true);
                     JOptionPane.showMessageDialog(Signup.this,"Unable to continue. Please try again.");

@@ -14,8 +14,17 @@ import java.util.List;
 
 public class TransactionDao {
     public List<Transaction> findByAccountId(String accountId) throws SQLException {
+        return readHistory(accountId, false);
+    }
+
+    public List<Transaction> findRecentByAccountId(String accountId) throws SQLException {
+        return readHistory(accountId, true);
+    }
+
+    private List<Transaction> readHistory(String accountId, boolean recent) throws SQLException {
         String sql = "SELECT transaction_id, account_id, transaction_type, amount, occurred_at "
-                + "FROM transactions WHERE account_id = ? ORDER BY occurred_at, transaction_id";
+                + "FROM transactions WHERE account_id = ? "
+                + (recent ? "ORDER BY occurred_at DESC, transaction_id DESC LIMIT 10" : "ORDER BY occurred_at, transaction_id");
         try (Connection con = Conn.getConnection();
              PreparedStatement ps = con.prepareStatement(sql)) {
             ps.setString(1, accountId);
