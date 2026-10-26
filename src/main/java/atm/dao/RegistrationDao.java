@@ -5,6 +5,7 @@ import atm.model.AdditionalDetails;
 import atm.model.CardCredentials;
 import atm.model.PersonalDetails;
 import atm.model.Registration;
+import atm.model.Money;
 import atm.security.PinHasher;
 
 import java.security.SecureRandom;
@@ -41,6 +42,8 @@ public class RegistrationDao {
                         insertPersonalDetails(con, registration);
                         stage = Stage.ADDITIONAL;
                         insertAdditionalDetails(con, registration);
+                        stage = Stage.ACCOUNT;
+                        insertAccount(con, registration);
                         stage = Stage.CREDENTIALS;
                         credentials = generateCredentials();
                         insertCredentials(con, registration.getApplicationId(), credentials);
@@ -66,13 +69,15 @@ public class RegistrationDao {
                                     + registration.getApplicationId() + ". Check it before retrying.", e);
                         }
                         if (e instanceof SQLException sqlError && isDuplicateKey(sqlError)
-                                && (stage == Stage.PERSONAL || stage == Stage.CREDENTIALS)) {
+                                && (stage == Stage.PERSONAL || stage == Stage.ACCOUNT || stage == Stage.CREDENTIALS)) {
                             if (attempt == MAX_ATTEMPTS) {
-                                throw new SQLException("Unable to allocate a unique application ID or card after "
+                                throw new SQLException("Unable to allocate a unique application, account ID or card after "
                                         + MAX_ATTEMPTS + " attempts. No registration was saved.", sqlError);
                             }
                             if (stage == Stage.PERSONAL) {
                                 registration.renewApplicationId();
+                            } else if (stage == Stage.ACCOUNT) {
+                                registration.renewAccountId();
                             }
                             continue;
                         }
@@ -127,6 +132,17 @@ public class RegistrationDao {
         }
     }
 
+    private void insertAccount(Connection con, Registration registration) throws SQLException {
+        String sql = "INSERT INTO accounts (account_id, formno, balance, balance_verified) VALUES (?, ?, ?, ?)";
+        try (PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setString(1, registration.getAccountId());
+            ps.setString(2, registration.getApplicationId());
+            ps.setBigDecimal(3, Money.ZERO);
+            ps.setBoolean(4, true);
+            requireOneRow(ps.executeUpdate());
+        }
+    }
+
     private void insertCredentials(Connection con, String applicationId, CardCredentials credentials) throws SQLException {
         String sql = "INSERT INTO login (cardno, pin_hash, formno) VALUES (?, ?, ?)";
         try (PreparedStatement ps = con.prepareStatement(sql)) {
@@ -170,5 +186,5 @@ public class RegistrationDao {
         }
     }
 
-    private enum Stage { PERSONAL, ADDITIONAL, CREDENTIALS, COMMIT }
+    private enum Stage { PERSONAL, ADDITIONAL, ACCOUNT, CREDENTIALS, COMMIT }
 }

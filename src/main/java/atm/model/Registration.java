@@ -2,6 +2,7 @@ package atm.model;
 
 import java.security.SecureRandom;
 import java.util.Objects;
+import java.util.UUID;
 
 /** One in-memory application shared by all signup screens. */
 public final class Registration {
@@ -9,6 +10,7 @@ public final class Registration {
     private static final String ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
     private String applicationId = newApplicationId();
+    private String accountId = UUID.randomUUID().toString();
     private PersonalDetails personalDetails;
     private AdditionalDetails additionalDetails;
     private CardCredentials credentials;
@@ -16,6 +18,15 @@ public final class Registration {
 
     public synchronized String getApplicationId() {
         return applicationId;
+    }
+
+    public synchronized String getAccountId() {
+        return accountId;
+    }
+
+    public synchronized void renewAccountId() {
+        requireEditable();
+        accountId = UUID.randomUUID().toString();
     }
 
     public synchronized PersonalDetails getPersonalDetails() {

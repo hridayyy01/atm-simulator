@@ -7,6 +7,10 @@ import atm.model.Registration;
 import atm.model.PersonalDetails;
 import atm.security.PinHasher;
 import atm.tools.MigratePins;
+import atm.tools.MigrateAccounts;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.time.Instant;
 import java.io.StringReader;
 
 import java.lang.reflect.InvocationHandler;
@@ -25,6 +29,7 @@ public final class DaoTest {
             "Test Parent", "Female", "test@example.invalid", "Married", "Test Address",
             "Test City", "123456", "Test State");
     private static final String PIN_FIXTURE = "pbkdf2-sha256$600000$AAECAwQFBgcICQoLDA0ODw==$mj8Uk1lF7SLS70PvzppZDceQEIBGQtufTiYwfc03sp4=";
+    private static final String ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
     private static Script script;
 
     public static void main(String[] args) throws Exception {
@@ -39,6 +44,8 @@ public final class DaoTest {
                 MigratePins.main(new String[0]);
                 return;
             }
+            accountAndTransactions();
+            accountMigration();
             pinMigration();
             migrationLogSafety();
             draftAndCompleteness();
@@ -53,6 +60,118 @@ public final class DaoTest {
         } finally {
             DriverManager.deregisterDriver(driver);
         }
+    }
+
+    private static void accountAndTransactions() throws Exception {
+        Step lookup = new Step("SELECT account_id, formno, balance, balance_verified FROM accounts ", 0, true);
+        lookup.columns.putAll(Map.of("account_id", ACCOUNT_ID, "formno", "1234", "balance", "9007199254740993.01", "balance_verified", "false"));
+        script = new Script(lookup);
+        atm.model.Account account = new AccountDao().findById(ACCOUNT_ID);
+        check(account.balance().equals(new BigDecimal("9007199254740993.01")) && !account.balanceVerified(),
+                "Read exact DECIMAL balances and preserve the unverified legacy state");
+        check(lookup.parameters.equals(List.of(ACCOUNT_ID)), "Find accounts by stable ID");
+        script.verifyClosed();
+        Step history = new Step("SELECT transaction_id, account_id, transaction_type, amount, occurred_at FROM transactions ", 0, true);
+        history.rows = List.of(
+                Map.of("transaction_id", "1", "account_id", ACCOUNT_ID, "transaction_type", "DEPOSIT", "amount", "0.10", "occurred_at", "2026-10-26T12:00:00.123456"),
+                Map.of("transaction_id", "2", "account_id", ACCOUNT_ID, "transaction_type", "WITHDRAWAL", "amount", "0.20", "occurred_at", "2026-10-26T13:00:00"));
+        script = new Script(history);
+        var transactions = new TransactionDao().findByAccountId(ACCOUNT_ID);
+        check(transactions.size() == 2 && transactions.get(0).amount().equals(new BigDecimal("0.10"))
+                && transactions.get(1).type() == atm.model.TransactionType.WITHDRAWAL
+                && transactions.get(0).occurredAt().equals(Instant.parse("2026-10-26T12:00:00.123456Z")),
+                "Read typed transaction amounts and UTC timestamps without floating-point conversion");
+        script.verifyClosed();
+    }
+
+    private static void accountMigration() throws Exception {
+        Step issues = new Step("INSERT INTO migration_issues ", 1, false);
+        Step forms = new Step("SELECT DISTINCT l.formno FROM login l ", 0, false);
+        Step create = account();
+        Step orphans = new Step("SELECT l.cardno FROM login l LEFT JOIN signup ", 0, false);
+        Step legacy = new Step("SELECT b.id, b.cardno, b.date, b.type, b.amount, ", 0, true);
+        legacy.rows = List.of(
+                Map.of("id", "1", "cardno", "0000000000000001", "date", "2026-10-26T12:00:00+05:30", "type", "Deposit", "amount", "9007199254740993.01"),
+                Map.of("id", "2", "date", "26/10/2026", "type", "unknown", "amount", "1.005"));
+        Step resolve = new Step("SELECT a.account_id FROM login l ", 0, true);
+        resolve.columns.put("account_id", ACCOUNT_ID);
+        Step insert = new Step("INSERT INTO transactions ", 1, false);
+        Step count = new Step("SELECT COUNT(*) AS issue_count FROM migration_issues", 0, true);
+        count.columns.put("issue_count", "1");
+        script = new Script(issues, forms, create, orphans, legacy, resolve, insert, count);
+        MigrateAccounts.Report report;
+        try (Connection con = script.connection()) { report = MigrateAccounts.migrate(con); }
+        check(report.accountsCreated() == 0 && report.transactionsImported() == 1 && report.recordsForReview() == 1,
+                "Import only unambiguous legacy records and report the rest");
+        check(insert.typedParameters.get(3).equals(new BigDecimal("9007199254740993.01"))
+                && insert.typedParameters.get(4).equals(LocalDateTime.parse("2026-10-26T06:30:00"))
+                && insert.typedParameters.get(5).equals(1L), "Persist exact migrated amounts, UTC time and the source row ID");
+        check(issues.parameters.get(0).equals("bank_legacy") && issues.parameters.get(1).equals("2")
+                && issues.parameters.get(2).contains("UNRESOLVED_OR_AMBIGUOUS_ACCOUNT")
+                && issues.parameters.get(2).contains("INVALID_AMOUNT")
+                && issues.parameters.get(2).contains("UNSUPPORTED_TYPE")
+                && issues.parameters.get(2).contains("AMBIGUOUS_OR_INVALID_TIMESTAMP"), "Report all ambiguity reasons without guessing");
+        check(script.commits == 1 && script.rollbacks == 0, "Commit imports and reports together");
+        script.verifyClosed();
+
+        issues = new Step("INSERT INTO migration_issues ", 1, false);
+        forms = new Step("SELECT DISTINCT l.formno FROM login l ", 0, false);
+        create = account();
+        orphans = new Step("SELECT l.cardno FROM login l LEFT JOIN signup ", 0, false);
+        legacy = new Step("SELECT b.id, b.cardno, b.date, b.type, b.amount, ", 0, true);
+        legacy.columns.put("imported_id", "1");
+        resolve = new Step("SELECT a.account_id FROM login l ", 0, false);
+        insert = new Step("INSERT INTO transactions ", 1, false);
+        count = new Step("SELECT COUNT(*) AS issue_count FROM migration_issues", 0, true);
+        count.columns.put("issue_count", "0");
+        script = new Script(issues, forms, create, orphans, legacy, resolve, insert, count);
+        try (Connection con = script.connection()) { report = MigrateAccounts.migrate(con); }
+        check(report.accountsCreated() == 0 && report.transactionsImported() == 0 && script.persisted.isEmpty(),
+                "Rerunning migration must preserve stable IDs and avoid duplicate imports");
+        script.verifyClosed();
+
+        issues = new Step("INSERT INTO migration_issues ", 1, false);
+        forms = new Step("SELECT DISTINCT l.formno FROM login l ", 0, true);
+        forms.columns.put("formno", "legacy-form");
+        create = account();
+        orphans = new Step("SELECT l.cardno FROM login l LEFT JOIN signup ", 0, true);
+        orphans.columns.put("cardno", "unlinked-card");
+        legacy = new Step("SELECT b.id, b.cardno, b.date, b.type, b.amount, ", 0, false);
+        resolve = new Step("SELECT a.account_id FROM login l ", 0, false);
+        insert = new Step("INSERT INTO transactions ", 1, false);
+        count = new Step("SELECT COUNT(*) AS issue_count FROM migration_issues", 0, true);
+        count.columns.put("issue_count", "2");
+        script = new Script(issues, forms, create, orphans, legacy, resolve, insert, count);
+        try (Connection con = script.connection()) { report = MigrateAccounts.migrate(con); }
+        check(report.accountsCreated() == 1 && report.transactionsImported() == 0
+                && create.typedParameters.get(3).equals(new BigDecimal("0.00"))
+                && create.typedParameters.get(4).equals(false), "Create legacy accounts with explicitly unverified placeholder balances");
+        check(UUID.fromString(create.parameters.get(0)).version() == 4, "Generate stable UUID account IDs");
+        String migratedAccountId = create.parameters.get(0);
+        check(script.persisted.stream().anyMatch(row -> row.get(0).equals("accounts")
+                && row.get(1).equals(migratedAccountId) && row.get(2).equals("OPENING_BALANCE_UNVERIFIED")),
+                "Report the missing authoritative opening balance");
+        check(issues.parameters.get(0).equals("login") && issues.parameters.get(1).equals("unlinked-card")
+                && issues.parameters.get(2).equals("UNRESOLVED_APPLICATION"), "Report orphaned legacy logins");
+        script.verifyClosed();
+
+        issues = new Step("INSERT INTO migration_issues ", 1, false);
+        forms = new Step("SELECT DISTINCT l.formno FROM login l ", 0, false);
+        create = account();
+        orphans = new Step("SELECT l.cardno FROM login l LEFT JOIN signup ", 0, false);
+        legacy = new Step("SELECT b.id, b.cardno, b.date, b.type, b.amount, ", 0, true);
+        legacy.columns.putAll(Map.of("id", "1", "cardno", "0000000000000001", "date", "2026-10-26T12:00:00Z", "type", "Deposit", "amount", "1.00"));
+        resolve = new Step("SELECT a.account_id FROM login l ", 0, true);
+        resolve.columns.put("account_id", ACCOUNT_ID);
+        insert = new Step("INSERT INTO transactions ", 1, false);
+        count = new Step("SELECT COUNT(*) AS issue_count FROM migration_issues", 0, true);
+        count.failure = new SQLException("Report query failed after import");
+        script = new Script(issues, forms, create, orphans, legacy, resolve, insert, count);
+        expectSqlFailure(() -> {
+            try (Connection con = script.connection()) { return MigrateAccounts.migrate(con); }
+        });
+        check(script.commits == 0 && script.rollbacks == 1 && script.persisted.isEmpty() && script.pending.isEmpty(),
+                "Roll back imported history when a later migration operation fails");
     }
 
     private static Registration draft(String senior) {
@@ -83,13 +202,14 @@ public final class DaoTest {
 
     private static Step personal() { return new Step("INSERT INTO signup ", 1, false); }
     private static Step additional() { return new Step("INSERT INTO signuptwo(", 1, false); }
+    private static Step account() { return new Step("INSERT INTO accounts ", 1, false); }
     private static Step credentials() { return new Step("INSERT INTO login ", 1, false); }
 
     private static void successfulSubmission() throws Exception {
         for (String senior : new String[]{"Yes", "No"}) {
             Registration registration = draft(senior);
             Step personal = personal(), additional = additional(), credentials = credentials();
-            script = new Script(personal, additional, credentials);
+            script = new Script(personal, additional, account(), credentials);
             CardCredentials result = REGISTRATION.submit(registration);
             String id = registration.getApplicationId();
             check(personal.parameters.equals(List.of(id, "Test Name", "Test Parent", "Female",
@@ -106,8 +226,8 @@ public final class DaoTest {
             } finally {
                 Arrays.fill(pin, '\0');
             }
-            check(script.commits == 1 && script.rollbacks == 0 && script.persisted.size() == 3,
-                    "Commit all three registration records together");
+            check(script.commits == 1 && script.rollbacks == 0 && script.persisted.size() == 4,
+                    "Commit all four registration records together");
             check(registration.isSubmitted() && REGISTRATION.submit(registration) == result,
                     "Repeated submission must return the committed credentials without another write");
             try {
@@ -120,7 +240,8 @@ public final class DaoTest {
 
     private static void authentication() throws Exception {
         for (int scenario = 0; scenario < 6; scenario++) {
-            Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash FROM login l ", 0, scenario != 2);
+            Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash, a.account_id FROM login l ", 0, scenario != 2);
+            lookup.columns.put("account_id", ACCOUNT_ID);
             lookup.columns.put("formno", "1234");
             lookup.columns.put("name", "Test Name");
             lookup.columns.put("pin_hash", switch (scenario) {
@@ -134,14 +255,14 @@ public final class DaoTest {
             try {
                 AuthenticatedUser user = AUTHENTICATION.authenticate("0000000000000001", pin);
                 check(lookup.parameters.equals(List.of("0000000000000001")), "Fetch by card number without sending PINs to JDBC");
-                check(scenario == 0 ? new AuthenticatedUser("1234", "Test Name").equals(user) : user == null,
+                check(scenario == 0 ? new AuthenticatedUser(ACCOUNT_ID, "1234", "Test Name").equals(user) : user == null,
                         "Authenticate only a matching supported salted hash; no plaintext fallback");
             } finally {
                 Arrays.fill(pin, '\0');
             }
             script.verifyClosed();
         }
-        Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash FROM login l ", 0, false);
+        Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash, a.account_id FROM login l ", 0, false);
         lookup.failure = new SQLException("Authentication failed");
         script = new Script(lookup);
         check(expectSqlFailure(() -> AUTHENTICATION.authenticate("0000000000000001", new char[]{'0','0','0','0'})) == lookup.failure,
@@ -221,9 +342,9 @@ public final class DaoTest {
     }
 
     private static void rollbackFailures() throws Exception {
-        for (int failedStage = 0; failedStage < 3; failedStage++) {
+        for (int failedStage = 0; failedStage < 4; failedStage++) {
             for (boolean zeroRows : new boolean[]{false, true}) {
-                Step[] steps = {personal(), additional(), credentials()};
+                Step[] steps = {personal(), additional(), account(), credentials()};
                 if (zeroRows) steps[failedStage].updateCount = 0;
                 else steps[failedStage].failure = new SQLException("Foreign key or database error", "23000", 1452);
                 script = new Script(Arrays.copyOf(steps, failedStage + 1));
@@ -249,38 +370,47 @@ public final class DaoTest {
         fail.failure = new SQLException("Temporary insert failure");
         script = new Script(personal(), fail);
         expectSqlFailure(() -> REGISTRATION.submit(registration));
-        script = new Script(personal(), additional(), credentials());
+        script = new Script(personal(), additional(), account(), credentials());
         REGISTRATION.submit(registration);
         check(registration.isSubmitted() && registration.getApplicationId().equals(id),
                 "A confirmed rollback must allow resubmission of the same collected application");
-        check(script.persisted.size() == 3 && script.commits == 1, "A later successful submission persists exactly one account");
+        check(script.persisted.size() == 4 && script.commits == 1, "A later successful submission persists exactly one account");
         script.verifyClosed();
     }
 
     private static SQLException duplicateKey() { return new SQLException("Duplicate entry", "23000", 1062); }
 
     private static void collisionRetries() throws Exception {
-        for (boolean applicationCollision : new boolean[]{true, false}) {
+        for (String kind : new String[]{"application", "account", "card"}) {
             Registration registration = draft("No");
             String originalId = registration.getApplicationId();
-            Step failed = applicationCollision ? personal() : credentials();
+            String originalAccount = registration.getAccountId();
+            Step failed = collisionStep(kind);
             failed.failure = duplicateKey();
-            Step personal = personal(), additional = additional(), credentials = credentials();
-            script = applicationCollision ? new Script(failed, personal, additional, credentials)
-                    : new Script(personal(), additional(), failed, personal, additional, credentials);
+            Step personal = personal(), additional = additional(), account = account(), credentials = credentials();
+            List<Step> steps = collisionPrefix(kind);
+            steps.add(failed);
+            steps.addAll(List.of(personal, additional, account, credentials));
+            script = new Script(steps.toArray(Step[]::new));
             REGISTRATION.submit(registration);
-            check(applicationCollision != originalId.equals(registration.getApplicationId()),
+            check(kind.equals("application") != originalId.equals(registration.getApplicationId()),
                     "Only regenerate the application ID for an application-ID collision");
+            check(kind.equals("account") != originalAccount.equals(registration.getAccountId()),
+                    "Keep the account ID stable except for a pre-commit account-ID collision");
             check(personal.parameters.get(0).equals(additional.parameters.get(0))
-                    && additional.parameters.get(0).equals(credentials.parameters.get(2)), "Use the same ID in all records after retry");
-            check(script.rollbacks == 1 && script.commits == 1 && script.persisted.size() == 3,
+                    && additional.parameters.get(0).equals(credentials.parameters.get(2))
+                    && account.parameters.get(1).equals(personal.parameters.get(0)), "Keep all application references consistent");
+            check(account.parameters.get(0).equals(registration.getAccountId())
+                    && account.typedParameters.get(3).equals(new BigDecimal("0.00"))
+                    && account.typedParameters.get(4).equals(true), "Create an account with an exact verified zero balance");
+            check(script.rollbacks == 1 && script.commits == 1 && script.persisted.size() == 4,
                     "Retry collisions only after rolling back the entire failed attempt");
             script.verifyClosed();
 
             List<Step> attempts = new ArrayList<>();
             for (int i = 0; i < 5; i++) {
-                if (!applicationCollision) { attempts.add(personal()); attempts.add(additional()); }
-                Step collision = applicationCollision ? personal() : credentials();
+                attempts.addAll(collisionPrefix(kind));
+                Step collision = collisionStep(kind);
                 collision.failure = duplicateKey();
                 attempts.add(collision);
             }
@@ -288,13 +418,24 @@ public final class DaoTest {
             SQLException error = expectSqlFailure(() -> REGISTRATION.submit(draft("Yes")));
             check(error.getMessage().contains("5 attempts"), "Report the exhausted collision retry limit");
             check(script.commits == 0 && script.rollbacks == 5 && script.persisted.isEmpty() && script.pending.isEmpty(),
-                    "Bound both application-ID and card collisions to five attempts without partial records");
+                    "Bound all generated-ID collisions to five attempts without partial records");
         }
+    }
+
+    private static Step collisionStep(String kind) {
+        return switch (kind) { case "application" -> personal(); case "account" -> account(); default -> credentials(); };
+    }
+
+    private static List<Step> collisionPrefix(String kind) {
+        List<Step> prefix = new ArrayList<>();
+        if (!kind.equals("application")) { prefix.add(personal()); prefix.add(additional()); }
+        if (kind.equals("card")) prefix.add(account());
+        return prefix;
     }
 
     private static void concurrentSubmission() throws Exception {
         Registration registration = draft("No");
-        script = new Script(personal(), additional(), credentials());
+        script = new Script(personal(), additional(), account(), credentials());
         CountDownLatch start = new CountDownLatch(1);
         try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
             Callable<CardCredentials> submit = () -> { start.await(); return new RegistrationDao().submit(registration); };
@@ -302,14 +443,14 @@ public final class DaoTest {
             start.countDown();
             check(first.get(10, TimeUnit.SECONDS) == second.get(10, TimeUnit.SECONDS), "Concurrent callers receive the same credentials");
         }
-        check(script.commits == 1 && script.persisted.size() == 3, "Concurrent submissions must not duplicate registration");
+        check(script.commits == 1 && script.persisted.size() == 4, "Concurrent submissions must not duplicate registration");
         script.verifyClosed();
     }
 
     private static void uncertainOutcomes() throws Exception {
         for (boolean commitAcknowledgementLost : new boolean[]{false, true}) {
             Registration registration = draft("No");
-            script = new Script(personal(), additional(), credentials());
+            script = new Script(personal(), additional(), account(), credentials());
             script.commitFailure = new SQLException("Commit connection lost");
             script.commitBeforeFailure = commitAcknowledgementLost;
             expectSqlFailure(() -> REGISTRATION.submit(registration));
@@ -328,7 +469,7 @@ public final class DaoTest {
         expectSqlFailure(() -> REGISTRATION.submit(rollbackRegistration));
 
         Registration committedRegistration = draft("No");
-        script = new Script(personal(), additional(), credentials());
+        script = new Script(personal(), additional(), account(), credentials());
         script.closeFailure = new SQLException("Close failed after commit");
         CardCredentials result = REGISTRATION.submit(committedRegistration);
         check(result == committedRegistration.getCredentials() && committedRegistration.isSubmitted(), "Cleanup errors must not invalidate a successful commit");
@@ -425,6 +566,7 @@ public final class DaoTest {
         private final Map<String, String> columns = new HashMap<>();
         private List<Map<String, String>> rows;
         private final List<String> parameters = new ArrayList<>();
+        private final Map<Integer, Object> typedParameters = new HashMap<>();
         private SQLException failure;
         private int closedStatements;
         private int openedResults;
@@ -439,10 +581,11 @@ public final class DaoTest {
         private PreparedStatement statement() {
             return proxy(PreparedStatement.class, (p, method, args) -> {
                 switch (method.getName()) {
-                    case "setString":
+                    case "setString", "setBigDecimal", "setBoolean", "setLong", "setObject":
                         int index = (int) args[0] - 1;
                         while (parameters.size() <= index) parameters.add(null);
-                        parameters.set(index, (String) args[1]);
+                        parameters.set(index, args[1] == null ? null : args[1].toString());
+                        typedParameters.put((int) args[0], args[1]);
                         return null;
                     case "executeUpdate":
                         check(!script.autoCommit, "Every registration write must be inside the transaction");
@@ -467,6 +610,10 @@ public final class DaoTest {
                         rowIndex[0]++;
                         return hasRow && rowIndex[0] < (rows == null ? 1 : rows.size());
                     case "getString": return (rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]);
+                    case "getLong": return Long.parseLong((rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]));
+                    case "getBoolean": return Boolean.parseBoolean((rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]));
+                    case "getBigDecimal": return new BigDecimal((rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]));
+                    case "getObject": return LocalDateTime.parse((rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]));
                     case "getCharacterStream":
                         String value = (rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]);
                         return value == null ? null : new StringReader(value);

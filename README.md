@@ -8,16 +8,18 @@ Java Swing ATM registration and login application.
 src/main/java/atm/
   App.java                 Application entry point
   db/Conn.java             JDBC connection configuration
-  dao/                     Registration and authentication SQL
+  dao/                     Registration, authentication, accounts and history SQL
   model/                   Plain Java data models
   security/                JDK PIN hashing and verification
-  tools/                   Offline PIN upgrade utility
+  tools/                   Offline PIN and account upgrade utilities
   ui/                      Swing screens and shared UI constants
 src/test/java/atm/dao/      Headless DAO regression tests
 src/test/java/atm/security/ PIN hashing regression tests
+src/test/java/atm/tools/    Legacy money/date conversion tests
 src/main/resources/icons/  Application images
 database/schema.sql        Existing database schema
 database/migrations/       Changes for existing databases
+database/reports/          Legacy reconciliation reports
 ```
 
 ## Configuration
@@ -77,6 +79,40 @@ follow the [PIN upgrade instructions](database/migrations/README.md). This adds
 plaintext columns. Fresh installations use the updated schema directly and skip
 migrations 003 and 004.
 
+Existing installations must then apply `database/migrations/005_accounts_and_transactions.sql`
+once and run `atm.tools.MigrateAccounts` before starting this version. Follow the
+[account and transaction upgrade instructions](database/migrations/README.md#accounts-and-transactions).
+This preserves `bank` as `bank_legacy`, imports only unambiguous history, and
+persists a report of unresolved records. Fresh installations skip all migrations.
+
+## Accounts and transactions
+
+Each account has a UUID account ID independent of its application, card and PIN.
+Registration creates its account in the same JDBC transaction as the application
+and credentials. New accounts start with a verified `0.00` balance. Authentication
+returns the stable account ID; `AccountDao` and `TransactionDao` read accounts and
+history by that ID.
+
+Balances and amounts are `DECIMAL(19,2)` in MySQL and `BigDecimal` in Java, using
+JDBC `setBigDecimal`/`getBigDecimal`. Values requiring rounding or exceeding the
+column's precision are rejected. Transaction amounts are positive; `DEPOSIT` and
+`WITHDRAWAL` supply the direction. Each transaction references an account with a
+foreign key and stores an explicit UTC `DATETIME(6)`, represented as `Instant` in
+Java. The JDBC conversion uses `LocalDateTime` in UTC, independent of the machine's
+timezone. No monetary value passes through `double` or `float`.
+
+Migrated accounts have `balance_verified = FALSE`: their zero balance is a
+placeholder, not an assertion of available funds. An administrator must reconcile
+the retained history and establish the authoritative balance before marking it
+verified. Any future balance-changing operation must reject unverified balances.
+The migration report includes imported net movement as reconciliation evidence;
+it does not infer an opening balance or silently discard ambiguous records.
+
+The schema targets MySQL 8.0.16+ with InnoDB and enforced check constraints.
+See MySQL's [exact numeric types](https://dev.mysql.com/doc/refman/8.4/en/precision-math-numbers.html)
+and [date/time types](https://dev.mysql.com/doc/refman/8.4/en/datetime.html), and
+JDK [BigDecimal](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html).
+
 ## PIN storage
 
 Login uses `JPasswordField` and passes a `char[]` to the DAO. New PINs are generated
@@ -101,14 +137,14 @@ during the upgrade, since the converter must read legacy plaintext values.
 
 The signup screens share one in-memory `Registration`. Pages 1 and 2 validate and
 collect details without writing to the database. The final **Submit Application**
-button saves `signup`, `signuptwo` and `login` in one JDBC transaction, returning
+button saves `signup`, `signuptwo`, `accounts` and `login` in one JDBC transaction, returning
 credentials only after a successful commit. An insert failure rolls back all
-three writes and leaves the final screen open with the collected details intact.
+four writes and leaves the final screen open with the collected details intact.
 
 Application IDs contain 20 random base-32 characters (100 random bits) and fit
 the existing `VARCHAR(20)` columns. Cards and PINs use `SecureRandom`; their
 existing 16-digit and four-digit formats are retained. Uniqueness is enforced
-by the database. Duplicate application IDs or cards trigger a full rollback and
+by the database. Duplicate application IDs, account IDs or cards trigger a full rollback and
 retry, with at most five total attempts per submission. Other errors are not
 automatically retried.
 
@@ -143,11 +179,12 @@ They cover transaction rollback at every insert, uniqueness collision limits,
 concurrent submissions, uncertain commits, field mapping and JDBC cleanup.
 
 ```sh
-javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/security/PinHasherTest.java
+javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/security/PinHasherTest.java src/test/java/atm/tools/AccountMigrationTest.java
 java -Djava.awt.headless=true -cp out atm.security.PinHasherTest
+java -Djava.awt.headless=true -cp out atm.tools.AccountMigrationTest
 DB_URL=jdbc:atm-dao-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.dao.DaoTest
 ```
 
-`App` creates the two concrete DAOs and passes them through screen constructors.
+`App` creates the registration and authentication DAOs and passes them through screen constructors.
 DAOs own JDBC resources and return plain data; validation, dialogs and navigation
 remain in the Swing screens.
