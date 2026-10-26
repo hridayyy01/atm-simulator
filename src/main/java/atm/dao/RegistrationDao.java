@@ -5,11 +5,13 @@ import atm.model.AdditionalDetails;
 import atm.model.CardCredentials;
 import atm.model.PersonalDetails;
 import atm.model.Registration;
+import atm.security.PinHasher;
 
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.Arrays;
 
 public class RegistrationDao {
     private static final int MAX_ATTEMPTS = 5;
@@ -34,12 +36,13 @@ public class RegistrationDao {
                 con.setAutoCommit(false);
                 for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                     Stage stage = Stage.PERSONAL;
+                    CardCredentials credentials = null;
                     try {
                         insertPersonalDetails(con, registration);
                         stage = Stage.ADDITIONAL;
                         insertAdditionalDetails(con, registration);
                         stage = Stage.CREDENTIALS;
-                        CardCredentials credentials = generateCredentials();
+                        credentials = generateCredentials();
                         insertCredentials(con, registration.getApplicationId(), credentials);
                         stage = Stage.COMMIT;
                         con.commit();
@@ -74,6 +77,8 @@ public class RegistrationDao {
                             continue;
                         }
                         throw e;
+                    } finally {
+                        if (credentials != null && !registration.isSubmitted()) credentials.clearPin();
                     }
                 }
                 throw new AssertionError("Registration retry limit was not enforced");
@@ -123,10 +128,15 @@ public class RegistrationDao {
     }
 
     private void insertCredentials(Connection con, String applicationId, CardCredentials credentials) throws SQLException {
-        String sql = "INSERT INTO login (cardno, pin, formno) VALUES (?, ?, ?)";
+        String sql = "INSERT INTO login (cardno, pin_hash, formno) VALUES (?, ?, ?)";
         try (PreparedStatement ps = con.prepareStatement(sql)) {
             ps.setString(1, credentials.getCardno());
-            ps.setString(2, credentials.getPin());
+            char[] pin = credentials.getPin();
+            try {
+                ps.setString(2, PinHasher.hash(pin));
+            } finally {
+                Arrays.fill(pin, '\0');
+            }
             ps.setString(3, applicationId);
             // The primary key, rather than a racy SELECT, enforces card uniqueness.
             requireOneRow(ps.executeUpdate());
@@ -136,7 +146,17 @@ public class RegistrationDao {
     private CardCredentials generateCredentials() {
         StringBuilder cardno = new StringBuilder(16);
         for (int i = 0; i < 16; i++) cardno.append(random.nextInt(10));
-        return new CardCredentials(cardno.toString(), String.valueOf(1000 + random.nextInt(9000)));
+        int value = 1000 + random.nextInt(9000);
+        char[] pin = new char[4];
+        for (int i = pin.length - 1; i >= 0; i--) {
+            pin[i] = (char) ('0' + value % 10);
+            value /= 10;
+        }
+        try {
+            return new CardCredentials(cardno.toString(), pin);
+        } finally {
+            Arrays.fill(pin, '\0');
+        }
     }
 
     private boolean isDuplicateKey(SQLException error) {

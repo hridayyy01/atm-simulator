@@ -2,6 +2,7 @@ package atm.dao;
 
 import atm.db.Conn;
 import atm.model.AuthenticatedUser;
+import atm.security.PinHasher;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -10,17 +11,17 @@ import java.sql.SQLException;
 
 public class AuthenticationDao {
     /** Returns the matching user, or null when the card and PIN do not match. */
-    public AuthenticatedUser authenticate(String cardno, String pin) throws SQLException {
-        String sql = "SELECT l.formno, s.name FROM login l " +
+    public AuthenticatedUser authenticate(String cardno, char[] pin) throws SQLException {
+        if (!PinHasher.isValidPin(pin)) return null;
+        String sql = "SELECT l.formno, s.name, l.pin_hash FROM login l " +
                 "JOIN signup s ON l.formno = s.formno " +
-                "WHERE l.cardno = ? AND l.pin = ?";
+                "WHERE l.cardno = ?";
 
         try (Connection conn = Conn.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, cardno);
-            ps.setString(2, pin);
             try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
+                if (rs.next() && PinHasher.verify(pin, rs.getString("pin_hash"))) {
                     return new AuthenticatedUser(rs.getString("formno"), rs.getString("name"));
                 }
                 return null;

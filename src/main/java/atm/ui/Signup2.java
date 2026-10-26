@@ -170,7 +170,7 @@ public class Signup2 extends JFrame {
                     Signup2.this.dispose();
                 } catch (Exception e) {
                     nextButton.setEnabled(true);
-                    JOptionPane.showMessageDialog(Signup2.this,"Error : " + e.getMessage());
+                    JOptionPane.showMessageDialog(Signup2.this,"Unable to continue. Please try again.");
                 }
             }
 

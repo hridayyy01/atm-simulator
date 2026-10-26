@@ -10,8 +10,11 @@ src/main/java/atm/
   db/Conn.java             JDBC connection configuration
   dao/                     Registration and authentication SQL
   model/                   Plain Java data models
+  security/                JDK PIN hashing and verification
+  tools/                   Offline PIN upgrade utility
   ui/                      Swing screens and shared UI constants
 src/test/java/atm/dao/      Headless DAO regression tests
+src/test/java/atm/security/ PIN hashing regression tests
 src/main/resources/icons/  Application images
 database/schema.sql        Existing database schema
 database/migrations/       Changes for existing databases
@@ -68,6 +71,32 @@ The migration reports historical applications with multiple cards and fails the
 unique-constraint addition if any remain; resolve those records explicitly before
 rerunning it. Fresh installations already include these constraints and engines.
 
+Before running this version against an existing plaintext-PIN installation,
+follow the [PIN upgrade instructions](database/migrations/README.md). This adds
+`login.pin_hash`, converts existing PINs with the Java tool, and removes legacy
+plaintext columns. Fresh installations use the updated schema directly and skip
+migrations 003 and 004.
+
+## PIN storage
+
+Login uses `JPasswordField` and passes a `char[]` to the DAO. New PINs are generated
+using `SecureRandom`. Only salted PBKDF2-HMAC-SHA256 hashes are stored in
+`login.pin_hash`: 600,000 iterations, a fresh 16-byte salt and a 32-byte derived
+key. The encoded value stores the algorithm, work factor, salt and derived key.
+Verification uses JDK `MessageDigest.isEqual` and rejects plaintext, malformed
+encodings and unsupported parameters. There is no plaintext authentication fallback.
+
+These parameters follow the [OWASP PBKDF2 guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2).
+Implementation uses the JDK's [PBKDF2WithHmacSHA256](https://docs.oracle.com/en/java/javase/21/docs/specs/security/standard-names.html)
+and [PBEKeySpec](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/spec/PBEKeySpec.html).
+
+Login buffers and the password field are cleared after each attempt. The generated
+initial PIN is shown once in the account-created dialog, then cleared from the
+shared credentials object. Credential objects redact their text representation.
+The application and migration tool do not log PINs, hashes, SQL parameters or raw
+exception messages/stack traces. Keep driver protocol/parameter tracing disabled
+during the upgrade, since the converter must read legacy plaintext values.
+
 ## Registration flow
 
 The signup screens share one in-memory `Registration`. Pages 1 and 2 validate and
@@ -97,7 +126,7 @@ Use JDK 21 and the local MySQL connector JAR. From the project root on macOS/Lin
 ```sh
 JDBC_JAR="../../mysql-connector-j-9.7.0/mysql-connector-j-9.7.0.jar"
 mkdir -p out
-javac -cp "$JDBC_JAR" -d out src/main/java/atm/App.java src/main/java/atm/db/*.java src/main/java/atm/dao/*.java src/main/java/atm/model/*.java src/main/java/atm/ui/*.java
+javac -cp "$JDBC_JAR" -d out src/main/java/atm/App.java src/main/java/atm/db/*.java src/main/java/atm/dao/*.java src/main/java/atm/model/*.java src/main/java/atm/security/*.java src/main/java/atm/tools/*.java src/main/java/atm/ui/*.java
 cp -R src/main/resources/. out/
 java -cp "out:$JDBC_JAR" atm.App
 ```
@@ -114,7 +143,8 @@ They cover transaction rollback at every insert, uniqueness collision limits,
 concurrent submissions, uncertain commits, field mapping and JDBC cleanup.
 
 ```sh
-javac -cp out -d out src/test/java/atm/dao/DaoTest.java
+javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/security/PinHasherTest.java
+java -Djava.awt.headless=true -cp out atm.security.PinHasherTest
 DB_URL=jdbc:atm-dao-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.dao.DaoTest
 ```
 

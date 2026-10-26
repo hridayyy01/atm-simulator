@@ -236,7 +236,7 @@ public class Signup extends JFrame {
                     Signup.this.dispose();
                 } catch (Exception e) {
                     nextButton.setEnabled(true);
-                    e.printStackTrace();
+                    JOptionPane.showMessageDialog(Signup.this,"Unable to continue. Please try again.");
                 }
             }
         });

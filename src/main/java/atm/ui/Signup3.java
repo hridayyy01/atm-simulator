@@ -9,6 +9,7 @@ import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.sql.SQLException;
+import java.util.Arrays;
 
 public class Signup3 extends JFrame {
     private final RegistrationDao registrationDao;
@@ -55,15 +56,23 @@ public class Signup3 extends JFrame {
                 try {
                     CardCredentials credentials = registrationDao.submit(registration);
                     formnoField.setText(registration.getApplicationId());
-                    JOptionPane.showMessageDialog(Signup3.this,"Account created!\nCard no : " + credentials.getCardno() + "\nPIN : " + credentials.getPin() +"\n please note this down it will not be shown again!");
+                    char[] pin = credentials.getPin();
+                    try {
+                        JOptionPane.showMessageDialog(Signup3.this,"Account created!\nCard no : " + credentials.getCardno() + "\nPIN : " + new String(pin) +"\n please note this down it will not be shown again!");
+                    } finally {
+                        Arrays.fill(pin, '\0');
+                        credentials.clearPin();
+                    }
                     Signup3.this.dispose();
                     new Login(authenticationDao).setVisible(true);
                 } catch(SQLException se) {
-                    se.printStackTrace();
-                    JOptionPane.showMessageDialog(Signup3.this,"Database Error : " + se.getMessage());
+                    String message = registration.isOutcomeUnknown()
+                            ? "Submission outcome could not be confirmed. Check application "
+                                + registration.getApplicationId() + " before retrying."
+                            : "Unable to save the application. Please try again.";
+                    JOptionPane.showMessageDialog(Signup3.this, message);
                 } catch (Exception e) {
-                    e.printStackTrace();
-                    JOptionPane.showMessageDialog(Signup3.this,"Error : " + e.getMessage());
+                    JOptionPane.showMessageDialog(Signup3.this,"Unable to submit the application. Please try again.");
                 } finally {
                     submitting = false;
                     formnoField.setText(registration.getApplicationId());

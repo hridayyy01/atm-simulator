@@ -31,14 +31,14 @@ CREATE TABLE IF NOT EXISTS signuptwo (
 CREATE TABLE IF NOT EXISTS login (
     formno  VARCHAR(20),
     cardno VARCHAR(20)  PRIMARY KEY,
-    pin  VARCHAR(10)  NOT NULL,
+    pin_hash VARCHAR(255) NOT NULL,
     CONSTRAINT uq_login_formno UNIQUE (formno),
     FOREIGN KEY (formno) REFERENCES signup(formno)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS bank (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    pin VARCHAR(10),
+    cardno VARCHAR(20),
     date VARCHAR(30),
     type VARCHAR(30),
     amount VARCHAR(20)

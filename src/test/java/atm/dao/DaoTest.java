@@ -5,6 +5,9 @@ import atm.model.AuthenticatedUser;
 import atm.model.CardCredentials;
 import atm.model.Registration;
 import atm.model.PersonalDetails;
+import atm.security.PinHasher;
+import atm.tools.MigratePins;
+import java.io.StringReader;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
@@ -21,6 +24,7 @@ public final class DaoTest {
     private static final PersonalDetails PERSONAL = new PersonalDetails("Test Name",
             "Test Parent", "Female", "test@example.invalid", "Married", "Test Address",
             "Test City", "123456", "Test State");
+    private static final String PIN_FIXTURE = "pbkdf2-sha256$600000$AAECAwQFBgcICQoLDA0ODw==$mj8Uk1lF7SLS70PvzppZDceQEIBGQtufTiYwfc03sp4=";
     private static Script script;
 
     public static void main(String[] args) throws Exception {
@@ -28,6 +32,15 @@ public final class DaoTest {
         Driver driver = new TestDriver();
         DriverManager.registerDriver(driver);
         try {
+            if (args.length == 1 && args[0].equals("--migration-failure-probe")) {
+                Step select = migrationSelect();
+                select.failure = new SQLException("Driver error containing dummy PIN 6789");
+                script = new Script(select, migrationUpdate());
+                MigratePins.main(new String[0]);
+                return;
+            }
+            pinMigration();
+            migrationLogSafety();
             draftAndCompleteness();
             successfulSubmission();
             authentication();
@@ -84,8 +97,15 @@ public final class DaoTest {
                     "Preserve personal field mapping");
             check(additional.parameters.equals(List.of(id, "Hindu", "General", "1-5 lakhs", "Graduate",
                     "Service", "TESTPAN", "000000000000", senior)), "Preserve additional field mapping");
-            check(result.getCardno().matches("\\d{16}") && result.getPin().matches("[1-9]\\d{3}"), "Preserve card and PIN formats");
-            check(credentials.parameters.equals(List.of(result.getCardno(), result.getPin(), id)), "Persist the returned credentials");
+            char[] pin = result.getPin();
+            try {
+                check(result.getCardno().matches("\\d{16}") && PinHasher.isValidPin(pin) && pin[0] != '0', "Preserve card and PIN formats");
+                check(credentials.parameters.get(0).equals(result.getCardno()) && credentials.parameters.get(2).equals(id), "Persist the returned card and application ID");
+                check(PinHasher.verify(pin, credentials.parameters.get(1)), "Persist a verifiable salted hash of the initial PIN");
+                check(!credentials.parameters.get(1).equals(new String(pin)), "Never send the plaintext PIN to JDBC");
+            } finally {
+                Arrays.fill(pin, '\0');
+            }
             check(script.commits == 1 && script.rollbacks == 0 && script.persisted.size() == 3,
                     "Commit all three registration records together");
             check(registration.isSubmitted() && REGISTRATION.submit(registration) == result,
@@ -99,22 +119,105 @@ public final class DaoTest {
     }
 
     private static void authentication() throws Exception {
-        for (boolean matches : new boolean[]{true, false}) {
-            Step lookup = new Step("SELECT l.formno, s.name FROM login l ", 0, matches);
+        for (int scenario = 0; scenario < 6; scenario++) {
+            Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash FROM login l ", 0, scenario != 2);
             lookup.columns.put("formno", "1234");
             lookup.columns.put("name", "Test Name");
+            lookup.columns.put("pin_hash", switch (scenario) {
+                case 3 -> "malformed";
+                case 4 -> null;
+                case 5 -> "0042";
+                default -> PIN_FIXTURE;
+            });
             script = new Script(lookup);
-            AuthenticatedUser user = AUTHENTICATION.authenticate("0000000000000001", "0000");
-            check(lookup.parameters.equals(List.of("0000000000000001", "0000")), "Preserve leading zeros");
-            check(matches ? new AuthenticatedUser("1234", "Test Name").equals(user) : user == null,
-                    "Only return a user when credentials match");
+            char[] pin = (scenario == 1 ? "0000" : "0042").toCharArray();
+            try {
+                AuthenticatedUser user = AUTHENTICATION.authenticate("0000000000000001", pin);
+                check(lookup.parameters.equals(List.of("0000000000000001")), "Fetch by card number without sending PINs to JDBC");
+                check(scenario == 0 ? new AuthenticatedUser("1234", "Test Name").equals(user) : user == null,
+                        "Authenticate only a matching supported salted hash; no plaintext fallback");
+            } finally {
+                Arrays.fill(pin, '\0');
+            }
             script.verifyClosed();
         }
-        Step lookup = new Step("SELECT l.formno, s.name FROM login l ", 0, false);
+        Step lookup = new Step("SELECT l.formno, s.name, l.pin_hash FROM login l ", 0, false);
         lookup.failure = new SQLException("Authentication failed");
         script = new Script(lookup);
-        check(expectSqlFailure(() -> AUTHENTICATION.authenticate("0000000000000001", "0000")) == lookup.failure,
+        check(expectSqlFailure(() -> AUTHENTICATION.authenticate("0000000000000001", new char[]{'0','0','0','0'})) == lookup.failure,
                 "Propagate authentication errors");
+    }
+
+    private static Step migrationSelect() {
+        return new Step("SELECT cardno, pin, pin_hash FROM login FOR UPDATE", 0, true);
+    }
+
+    private static Step migrationUpdate() {
+        return new Step("UPDATE login SET pin_hash = ?, pin = NULL WHERE cardno = ?", 1, false);
+    }
+
+    private static void pinMigration() throws Exception {
+        Step select = migrationSelect(), update = migrationUpdate();
+        select.columns.put("cardno", "0000000000000001");
+        select.columns.put("pin", "0042");
+        script = new Script(select, update);
+        try (Connection con = script.connection()) {
+            check(MigratePins.migrate(con) == 1, "Upgrade the legacy PIN record");
+        }
+        check(PinHasher.verify(new char[]{'0','0','4','2'}, update.parameters.get(0)), "Preserve the legacy PIN, including leading zeros");
+        check(update.parameters.get(1).equals("0000000000000001") && update.parameters.size() == 2,
+                "Update the correct card without sending the legacy PIN back to JDBC");
+        check(script.commits == 1 && script.rollbacks == 0, "Commit converted records together");
+        script.verifyClosed();
+
+        select = migrationSelect();
+        select.columns.put("pin_hash", PIN_FIXTURE);
+        script = new Script(select, migrationUpdate());
+        try (Connection con = script.connection()) {
+            check(MigratePins.migrate(con) == 0, "Reruns skip already upgraded records");
+        }
+        check(script.pending.isEmpty() && script.persisted.isEmpty(), "Do not overwrite hashes on rerun");
+        script.verifyClosed();
+
+        for (String invalid : new String[]{"bad", "12345"}) {
+            select = migrationSelect();
+            select.columns.put("pin", invalid);
+            script = new Script(select, migrationUpdate());
+            expectSqlFailure(() -> {
+                try (Connection con = script.connection()) { return MigratePins.migrate(con); }
+            });
+            check(script.rollbacks == 1 && script.commits == 0, "Invalid legacy credentials must roll back the migration");
+        }
+        select = migrationSelect();
+        select.columns.put("pin", "0042");
+        update = migrationUpdate();
+        update.failure = new SQLException("Migration update failed");
+        script = new Script(select, update);
+        expectSqlFailure(() -> {
+            try (Connection con = script.connection()) { return MigratePins.migrate(con); }
+        });
+        check(script.rollbacks == 1 && script.commits == 0, "Roll back failed credential updates");
+
+        select = migrationSelect();
+        select.rows = List.of(
+                Map.of("cardno", "0000000000000001", "pin", "0042"),
+                Map.of("cardno", "0000000000000002", "pin", "bad"));
+        script = new Script(select, migrationUpdate());
+        expectSqlFailure(() -> {
+            try (Connection con = script.connection()) { return MigratePins.migrate(con); }
+        });
+        check(script.commits == 0 && script.rollbacks == 1 && script.pending.isEmpty() && script.persisted.isEmpty(),
+                "A later invalid row must undo earlier converted rows in the same migration");
+    }
+
+    private static void migrationLogSafety() throws Exception {
+        String javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        Process child = new ProcessBuilder(javaExecutable, "-cp", System.getProperty("java.class.path"),
+                DaoTest.class.getName(), "--migration-failure-probe").redirectErrorStream(true).start();
+        check(child.waitFor(10, TimeUnit.SECONDS), "Migration log probe completed");
+        String output = new String(child.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        check(child.exitValue() == 1 && output.contains("PIN migration failed") && !output.contains("6789"),
+                "Do not print driver exception messages containing PINs");
     }
 
     private static void rollbackFailures() throws Exception {
@@ -320,6 +423,7 @@ public final class DaoTest {
         private int updateCount;
         private final boolean hasRow;
         private final Map<String, String> columns = new HashMap<>();
+        private List<Map<String, String>> rows;
         private final List<String> parameters = new ArrayList<>();
         private SQLException failure;
         private int closedStatements;
@@ -356,14 +460,16 @@ public final class DaoTest {
 
         private ResultSet resultSet() {
             openedResults++;
-            boolean[] visited = {false};
+            int[] rowIndex = {-1};
             return proxy(ResultSet.class, (p, method, args) -> {
                 switch (method.getName()) {
                     case "next":
-                        boolean found = hasRow && !visited[0];
-                        visited[0] = true;
-                        return found;
-                    case "getString": return columns.get((String) args[0]);
+                        rowIndex[0]++;
+                        return hasRow && rowIndex[0] < (rows == null ? 1 : rows.size());
+                    case "getString": return (rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]);
+                    case "getCharacterStream":
+                        String value = (rows == null ? columns : rows.get(rowIndex[0])).get((String) args[0]);
+                        return value == null ? null : new StringReader(value);
                     case "close": closedResults++; return null;
                     default: throw new AssertionError("Unexpected result set method: " + method.getName());
                 }
