@@ -35,13 +35,14 @@ public class AccountService {
     }
 
     public Account getAccount(Session session) throws SQLException {
-        Account account = accountDao.findById(session.getAccountId());
+        Account account = accountDao.findForSession(session);
         if (account == null) throw new AccountOperationException(AccountOperationException.Reason.ACCOUNT_NOT_FOUND);
         return account;
     }
 
     public List<Transaction> getRecentTransactions(Session session) throws SQLException {
-        return transactionDao.findRecentByAccountId(session.getAccountId());
+        getAccount(session);
+        return transactionDao.findRecentForSession(session);
     }
 
     private Account post(Session session, BigDecimal amount, TransactionType type) throws SQLException {
@@ -56,7 +57,7 @@ public class AccountService {
             con.setAutoCommit(false);
             try {
                 // Every balance-dependent decision uses the row locked by this transaction.
-                Account current = accountDao.findByIdForUpdate(con, accountId);
+                Account current = accountDao.findByIdForUpdate(con, session);
                 if (current == null) throw new AccountOperationException(AccountOperationException.Reason.ACCOUNT_NOT_FOUND);
                 if (!current.balanceVerified()) {
                     throw new AccountOperationException(AccountOperationException.Reason.BALANCE_UNVERIFIED);
@@ -71,8 +72,8 @@ public class AccountService {
                 } catch (IllegalArgumentException e) {
                     throw new AccountOperationException(AccountOperationException.Reason.BALANCE_LIMIT);
                 }
-                accountDao.updateBalance(con, accountId, balance);
-                transactionDao.insert(con, accountId, type, amount, Instant.now().truncatedTo(ChronoUnit.MICROS));
+                accountDao.updateBalance(con, session, balance);
+                transactionDao.insert(con, session, type, amount, Instant.now().truncatedTo(ChronoUnit.MICROS));
                 result = new Account(accountId, current.formno(), balance, true);
                 con.commit();
                 committed = true;

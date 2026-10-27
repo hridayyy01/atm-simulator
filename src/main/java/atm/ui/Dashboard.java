@@ -10,15 +10,11 @@ import atm.model.TransactionType;
 import atm.security.PinHasher;
 
 import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
-import java.awt.Dimension;
 import java.awt.GridLayout;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.math.BigDecimal;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -55,7 +51,7 @@ public final class Dashboard extends JFrame {
         JPanel actions = new JPanel(new GridLayout(3, 2, 12, 12));
         addAction(actions, "Deposit", () -> postTransaction(TransactionType.DEPOSIT));
         addAction(actions, "Withdrawal", () -> postTransaction(TransactionType.WITHDRAWAL));
-        addAction(actions, "Balance", this::showBalance);
+        addAction(actions, "Balance Enquiry", this::showBalance);
         addAction(actions, "Mini Statement", this::showMiniStatement);
         addAction(actions, "Change PIN", this::changePin);
         addAction(actions, "Logout", this::logout);
@@ -93,14 +89,14 @@ public final class Dashboard extends JFrame {
         String action = type == TransactionType.DEPOSIT ? "Deposit" : "Withdrawal";
         runTask(() -> type == TransactionType.DEPOSIT
                         ? accountService.deposit(session, amount) : accountService.withdraw(session, amount),
-                account -> JOptionPane.showMessageDialog(this, action + " successful.\nBalance: " + account.balance().toPlainString()),
+                account -> JOptionPane.showMessageDialog(this, action + " successful.\nBalance: " + CurrencyFormatter.format(account.balance())),
                 "Unable to confirm the " + action.toLowerCase(java.util.Locale.ROOT)
                         + ". Check balance and mini statement before trying again.");
     }
 
     private void showBalance() {
         runTask(() -> accountService.getAccount(session), account -> JOptionPane.showMessageDialog(this, account.balanceVerified()
-                ? "Balance: " + account.balance().toPlainString()
+                ? "Current balance: " + CurrencyFormatter.format(account.balance())
                 : "Balance is pending administrative reconciliation."), "Unable to retrieve the balance. Please try again.");
     }
 
@@ -110,22 +106,7 @@ public final class Dashboard extends JFrame {
     }
 
     private void displayStatement(List<Transaction> transactions) {
-        if (transactions.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No transactions yet.");
-            return;
-        }
-        DateTimeFormatter time = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC);
-        Object[][] rows = new Object[transactions.size()][3];
-        for (int i = 0; i < transactions.size(); i++) {
-            Transaction transaction = transactions.get(i);
-            rows[i] = new Object[]{time.format(transaction.occurredAt()), transaction.type().name(), transaction.amount().toPlainString()};
-        }
-        DefaultTableModel model = new DefaultTableModel(rows, new String[]{"Time (UTC)", "Type", "Amount"}) {
-            @Override public boolean isCellEditable(int row, int column) { return false; }
-        };
-        JTable table = new JTable(model);
-        table.setPreferredScrollableViewportSize(new Dimension(560, 200));
-        JOptionPane.showMessageDialog(this, new JScrollPane(table), "Mini Statement — latest 10", JOptionPane.PLAIN_MESSAGE);
+        JOptionPane.showMessageDialog(this, new MiniStatementPanel(transactions), "Mini Statement — latest 10", JOptionPane.PLAIN_MESSAGE);
     }
 
     private void changePin() {

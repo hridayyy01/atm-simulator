@@ -9,6 +9,7 @@ public final class Session {
     public Session(AuthenticatedUser user) {
         this.user = Objects.requireNonNull(user);
         Objects.requireNonNull(user.accountId());
+        Objects.requireNonNull(user.formno());
         Objects.requireNonNull(user.name());
     }
 
@@ -20,6 +21,11 @@ public final class Session {
     public synchronized String getName() {
         requireActive();
         return user.name();
+    }
+
+    public synchronized String getFormno() {
+        requireActive();
+        return user.formno();
     }
 
     public synchronized boolean isActive() {

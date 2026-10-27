@@ -201,8 +201,8 @@ public final class AccountServiceTest {
                 switch (method.getName()) {
                     case "setString", "setBigDecimal", "setObject": values.put((int) args[0], args[1]); return null;
                     case "executeQuery":
-                        check(!autoCommit && sql.endsWith("WHERE account_id = ? FOR UPDATE"), "Lock the primary-key account row in the transaction");
-                        check(ACCOUNT_ID.equals(values.get(1)), "Use the authenticated session identity");
+                        check(!autoCommit && sql.endsWith("WHERE account_id = ? AND formno = ? FOR UPDATE"), "Lock the owned account row in the transaction");
+                        check(ACCOUNT_ID.equals(values.get(1)) && "test-application".equals(values.get(2)), "Use both authenticated account and application identity");
                         int read = db.reads.incrementAndGet();
                         if (read == 2) db.secondAttempt.countDown();
                         if (!db.row.tryLock(5, TimeUnit.SECONDS)) throw new SQLException("Test row lock timed out");
@@ -215,7 +215,9 @@ public final class AccountServiceTest {
                     case "executeUpdate":
                         check(!autoCommit && locked && db.row.isHeldByCurrentThread(), "Keep the row locked through every write");
                         if (sql.startsWith("UPDATE accounts SET balance = ?")) {
-                            check(ACCOUNT_ID.equals(values.get(2)), "Update only the authenticated account");
+                            check(sql.endsWith("WHERE account_id = ? AND formno = ?")
+                                    && ACCOUNT_ID.equals(values.get(2)) && "test-application".equals(values.get(3)),
+                                    "Update only the authenticated owner's account");
                             balance = (BigDecimal) values.get(1);
                             check(balance.signum() >= 0, "Never persist a negative balance");
                         } else if (sql.startsWith("INSERT INTO transactions ")) {

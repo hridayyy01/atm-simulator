@@ -70,7 +70,7 @@ public final class DaoTest {
     private static void sessionLifecycle() {
         atm.model.Session first = new atm.model.Session(new AuthenticatedUser(ACCOUNT_ID, "1234", "First User"));
         atm.model.Session second = new atm.model.Session(new AuthenticatedUser("another-account", "5678", "Second User"));
-        check(first.isActive() && first.getAccountId().equals(ACCOUNT_ID) && first.getName().equals("First User"),
+        check(first.isActive() && first.getAccountId().equals(ACCOUNT_ID) && first.getFormno().equals("1234") && first.getName().equals("First User"),
                 "Carry only the authenticated account identity into a session");
         first.logout();
         first.logout();
@@ -80,6 +80,12 @@ public final class DaoTest {
         catch (IllegalStateException expected) { }
         try { first.getName(); throw new AssertionError("Reject stale user access after logout"); }
         catch (IllegalStateException expected) { }
+        try { first.getFormno(); throw new AssertionError("Reject stale application identity after logout"); }
+        catch (IllegalStateException expected) { }
+    }
+
+    private static atm.model.Session querySession() {
+        return new atm.model.Session(new AuthenticatedUser(ACCOUNT_ID, "1234", "Test User"));
     }
 
     private static atm.model.Account postTransaction(BigDecimal amount, atm.model.TransactionType type) throws SQLException {
@@ -104,7 +110,10 @@ public final class DaoTest {
             var result = postTransaction(new BigDecimal("0.20"), type);
             BigDecimal expected = new BigDecimal(type == atm.model.TransactionType.DEPOSIT ? "100.30" : "99.90");
             check(result.balance().equals(expected) && update.typedParameters.get(1).equals(expected), "Update balances with exact decimal arithmetic");
-            check(lookup.actualSql.endsWith("FOR UPDATE") && lookup.parameters.equals(List.of(ACCOUNT_ID)), "Lock only the session's account");
+            check(lookup.actualSql.endsWith("WHERE account_id = ? AND formno = ? FOR UPDATE")
+                    && lookup.parameters.equals(List.of(ACCOUNT_ID, "1234")), "Lock only the session's owned account");
+            check(update.actualSql.endsWith("WHERE account_id = ? AND formno = ?")
+                    && update.parameters.get(2).equals("1234"), "Constrain balance writes to the same owner");
             check(ledger.parameters.get(0).equals(ACCOUNT_ID) && ledger.parameters.get(1).equals(type.name())
                     && ledger.typedParameters.get(3).equals(new BigDecimal("0.20"))
                     && ((LocalDateTime) ledger.typedParameters.get(4)).getNano() % 1000 == 0,
@@ -152,11 +161,12 @@ public final class DaoTest {
             try { postTransaction(new BigDecimal(invalid), atm.model.TransactionType.DEPOSIT); throw new AssertionError("Reject invalid amounts"); }
             catch (IllegalArgumentException expected) { check(script.connections == 0, "Validate amounts before opening JDBC"); }
         }
-        Step history = new Step("SELECT transaction_id, account_id, transaction_type, amount, occurred_at FROM transactions ", 0, false);
+        Step history = new Step("SELECT t.transaction_id, t.account_id, t.transaction_type, t.amount, t.occurred_at FROM transactions t ", 0, false);
         script = new Script(history);
-        check(new TransactionDao().findRecentByAccountId(ACCOUNT_ID).isEmpty(), "Support an empty mini statement");
-        check(history.actualSql.endsWith("ORDER BY occurred_at DESC, transaction_id DESC LIMIT 10")
-                && history.parameters.equals(List.of(ACCOUNT_ID)), "Limit mini statements to this account's ten newest entries");
+        check(new TransactionDao().findRecentForSession(querySession()).isEmpty(), "Support an empty mini statement");
+        check(history.actualSql.endsWith("ORDER BY t.occurred_at DESC, t.transaction_id DESC LIMIT 10")
+                && history.actualSql.contains("WHERE t.account_id = ? AND a.formno = ?")
+                && history.parameters.equals(List.of(ACCOUNT_ID, "1234")), "Limit mini statements to this owner's ten newest entries");
         script.verifyClosed();
     }
 
@@ -204,21 +214,25 @@ public final class DaoTest {
         Step lookup = new Step("SELECT account_id, formno, balance, balance_verified FROM accounts ", 0, true);
         lookup.columns.putAll(Map.of("account_id", ACCOUNT_ID, "formno", "1234", "balance", "9007199254740993.01", "balance_verified", "false"));
         script = new Script(lookup);
-        atm.model.Account account = new AccountDao().findById(ACCOUNT_ID);
+        atm.model.Account account = new AccountDao().findForSession(querySession());
         check(account.balance().equals(new BigDecimal("9007199254740993.01")) && !account.balanceVerified(),
                 "Read exact DECIMAL balances and preserve the unverified legacy state");
-        check(lookup.parameters.equals(List.of(ACCOUNT_ID)), "Find accounts by stable ID");
+        check(lookup.actualSql.endsWith("WHERE account_id = ? AND formno = ?")
+                && lookup.parameters.equals(List.of(ACCOUNT_ID, "1234")), "Find accounts by stable ID and authenticated ownership");
         script.verifyClosed();
-        Step history = new Step("SELECT transaction_id, account_id, transaction_type, amount, occurred_at FROM transactions ", 0, true);
+        Step history = new Step("SELECT t.transaction_id, t.account_id, t.transaction_type, t.amount, t.occurred_at FROM transactions t ", 0, true);
         history.rows = List.of(
                 Map.of("transaction_id", "1", "account_id", ACCOUNT_ID, "transaction_type", "DEPOSIT", "amount", "0.10", "occurred_at", "2026-10-26T12:00:00.123456"),
                 Map.of("transaction_id", "2", "account_id", ACCOUNT_ID, "transaction_type", "WITHDRAWAL", "amount", "0.20", "occurred_at", "2026-10-26T13:00:00"));
         script = new Script(history);
-        var transactions = new TransactionDao().findByAccountId(ACCOUNT_ID);
+        var transactions = new TransactionDao().findForSession(querySession());
         check(transactions.size() == 2 && transactions.get(0).amount().equals(new BigDecimal("0.10"))
                 && transactions.get(1).type() == atm.model.TransactionType.WITHDRAWAL
                 && transactions.get(0).occurredAt().equals(Instant.parse("2026-10-26T12:00:00.123456Z")),
                 "Read typed transaction amounts and UTC timestamps without floating-point conversion");
+        check(history.actualSql.contains("WHERE t.account_id = ? AND a.formno = ?")
+                && history.actualSql.endsWith("ORDER BY t.occurred_at, t.transaction_id")
+                && history.parameters.equals(List.of(ACCOUNT_ID, "1234")), "Scope full history to the owner and preserve timestamp/ID order");
         script.verifyClosed();
     }
 

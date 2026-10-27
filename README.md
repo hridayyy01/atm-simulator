@@ -16,6 +16,7 @@ src/main/java/atm/
   ui/                      Swing screens and shared UI constants
 src/test/java/atm/dao/      Headless DAO regression tests
 src/test/java/atm/service/  Service validation and concurrent-operation tests
+src/test/java/atm/ui/       Headless currency and statement presentation tests
 src/test/java/atm/security/ PIN hashing regression tests
 src/test/java/atm/tools/    Legacy money/date conversion tests
 src/main/resources/icons/  Application images
@@ -140,7 +141,11 @@ screen cancels that draft and returns to login.
 Successful authentication creates an explicit `Session` with the account ID and
 holder identity. It contains no PIN. The dashboard receives that session, the
 account service and its other dependencies through its constructor. All account operations use the session's
-account ID, with no global current-user state.
+account ID, with no global current-user state. Account and history DAO methods
+accept the active `Session`, not a caller-selected account ID. Queries bind both
+its account ID and application identity (`formno`); history joins the owned account
+before returning rows. Missing and non-owned accounts produce the same result,
+and expired sessions are rejected before read connections are opened.
 
 The dashboard provides these actions:
 
@@ -149,16 +154,25 @@ The dashboard provides these actions:
   insufficient funds; both actions reject unverified legacy balances. Failed
   writes roll back. Monetary operations are never automatically retried after a
   database error; check balance and mini statement if a commit was unconfirmed.
-- **Balance:** fetch the latest balance; unverified legacy accounts display a
+- **Balance Enquiry:** fetch the latest owned account balance; unverified legacy accounts display a
   reconciliation notice instead of the placeholder zero.
 - **Mini Statement:** show this account's ten newest transactions, newest first,
-  with UTC timestamps, transaction types and exact decimal amounts.
+  ordered by timestamp descending and then transaction ID descending. It displays
+  transaction IDs, UTC timestamps to microseconds, types and formatted amounts.
+  An owned account without transactions displays “No transactions yet for this
+  account.” Statement cells are read-only and retain the database order.
 - **Change PIN:** require the current PIN, a different four-digit new PIN and its
   confirmation. The DAO locks the credentials, verifies the current salted hash
   and stores a new salted hash. All three inputs use password fields; temporary
   PIN buffers are cleared. The new PIN is required for the next login.
 - **Logout:** invalidate the session, dispose the dashboard and create a fresh login
   screen with empty fields. Closing the dashboard performs the same logout.
+
+Balances, deposit/withdrawal confirmations and statement amounts use one
+`CurrencyFormatter`: explicit INR units, comma grouping and exactly two decimal
+places (for example `INR 1,234.50`), independent of the machine's default locale.
+Amounts remain `BigDecimal` throughout formatting; fractional cents are rejected
+without rounding.
 
 Login and dashboard database work runs in `SwingWorker`s, keeping the event thread
 responsive. Actions are disabled while work is in progress; logout waits for a
@@ -239,12 +253,19 @@ concurrent deposits, exact amounts, full-balance withdrawal, validation before
 JDBC, and rollback when a ledger insert fails. This tests service/DAO coordination;
 it does not substitute for a live InnoDB integration test.
 
+`AccountQueryTest` checks multiple owners, mismatched ownership, expired sessions,
+timestamp/ID ties, the ten-row limit and empty history with an isolated JDBC query
+model. `AccountViewsTest` verifies currency, empty-state and statement rendering
+on the Swing event thread in headless mode, including multiple default locales.
+
 ```sh
-javac -cp out -d out src/test/java/atm/dao/DaoTest.java src/test/java/atm/service/AccountServiceTest.java src/test/java/atm/security/PinHasherTest.java src/test/java/atm/tools/AccountMigrationTest.java
+javac -cp out -d out src/test/java/atm/dao/*.java src/test/java/atm/service/*.java src/test/java/atm/ui/*.java src/test/java/atm/security/*.java src/test/java/atm/tools/*.java
 java -Djava.awt.headless=true -cp out atm.security.PinHasherTest
 java -Djava.awt.headless=true -cp out atm.tools.AccountMigrationTest
+java -Djava.awt.headless=true -cp out atm.ui.AccountViewsTest
 DB_URL=jdbc:atm-dao-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.dao.DaoTest
 DB_URL=jdbc:atm-service-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.service.AccountServiceTest
+DB_URL=jdbc:atm-query-test DB_USERNAME=test-only-user DB_PASSWORD=test-only-password java -Djava.awt.headless=true -cp out atm.service.AccountQueryTest
 ```
 
 `App` creates the concrete DAOs, injects the account/history DAOs into
